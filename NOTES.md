@@ -28,3 +28,24 @@
 - `AstNode` tagged union with pointer-based children
 - `parse`, `printAst`, and `freeAst` functions
 - Grammar for declarations, statements, and expressions
+
+## Phase 2 — Parser & AST (Complete)
+
+### What was built
+- Recursive-descent parser added to `main.c` using the Phase 1 lexer
+- Pointer-based `AstNode` tagged union with node-specific payloads
+- `parse(const char* source)` entry point producing a program-level `NODE_BLOCK`
+- Debug pretty printer `printAst(AstNode* node, int indent)`
+- Recursive deallocator `freeAst(AstNode* node)` covering all node types
+
+### Supported grammar
+- Declarations: `let` var declarations, `function` declarations
+- Statements: block, if/else, while, return, print, expression statements
+- Expressions: assignment, logical `&&`/`||`, equality, comparison, term, factor, unary, call, primary
+
+### Known limitations
+- Basic error recovery; stops returning AST on first error
+- `print` is parsed as a statement (not a normal function identifier) to match Phase 2 spec
+
+### Next phase (Phase 3 — Tree-walk interpreter)
+- Value system (numbers/strings/bools/null/functions)\n+- Environments for scoping (`Env`)\n+- Interpreter that executes the AST\n*** End Patch}]} />
