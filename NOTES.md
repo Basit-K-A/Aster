@@ -11,13 +11,16 @@
 | Value | `value.h`, `value.c` | Runtime values and functions |
 | Env | `env.h`, `env.c` | Lexical scoping |
 | Interpreter | `interpreter.h`, `interpreter.c` | Tree-walk execution |
+| Chunk | `chunk.h`, `chunk.c` | Bytecode container and constant pool |
+| Compiler | `compiler.h`, `compiler.c` | AST → bytecode compiler |
+| Debug | `debug.h`, `debug.c` | Bytecode disassembler |
 | Main | `main.c` | Entry point and tests |
 
 Build with `make` (Unix) or:
 
 ```powershell
-gcc -std=c17 -Wall -Wextra -c main.c lexer.c ast.c parser.c value.c env.c interpreter.c
-gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o interpreter.o -lm
+gcc -std=c17 -Wall -Wextra -c main.c lexer.c ast.c parser.c value.c env.c interpreter.c chunk.c compiler.c debug.c
+gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o interpreter.o chunk.o compiler.o debug.o -lm
 ```
 
 ## Phase 1 — Lexer (Complete)
@@ -96,4 +99,28 @@ gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o 
 ### Next phase (Phase 4 — Bytecode compiler)
 - `Chunk` bytecode container with constant pool
 - `compile(AstNode*, Compiler*)` AST → opcodes
-- `disassemble(Chunk*, const char*)` for debugging*** End Patch}]} />
+- `disassemble(Chunk*, const char*)` for debugging
+
+## Phase 4 — Bytecode Compiler (Complete)
+
+### What was built
+- `Chunk` with growable bytecode stream, constant pool, and line info
+- `writeChunk`, `addConstant`, `freeChunk` in `chunk.c`
+- Full opcode set per spec (globals, locals, jumps, loops, calls, halt)
+- `compile(AstNode*, Compiler*)` walks AST and emits stack bytecode
+- Jump patching for `if`/`while` and short-circuit `&&`/`||`
+- `disassemble(Chunk*, const char*)` in `debug.c`
+
+### Phase 4 test output (`let x = 5 + 10; print(x);`)
+- `OP_CONST 5`, `OP_CONST 10`, `OP_ADD`, `OP_DEF_GLOBAL x`
+- `OP_GET_GLOBAL x`, `OP_PRINT`, `OP_HALT`
+
+### Known limitations
+- User-defined functions not compiled yet (deferred to Phase 6)
+- No VM execution yet (Phase 5)
+- Global name constants may be duplicated in the constant pool
+
+### Next phase (Phase 5 — Stack-based VM)
+- `VM` struct with stack, call frames, globals
+- `run(VM*)` dispatch loop executing `Chunk` bytecode
+- All Phase 3 tests must pass through the VM*** End Patch}]} />
