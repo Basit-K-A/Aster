@@ -26,7 +26,7 @@ typedef enum {
 } OpCode;
 
 /* Bytecode container with instruction stream, constant pool, and line info */
-typedef struct {
+typedef struct Chunk {
     uint8_t* code;
     int count;
     int capacity;

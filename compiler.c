@@ -243,6 +243,69 @@ static void compileBlock(AstNode* node, CompilerState* c, bool createScope) {
     if (createScope) endScope(c);
 }
 
+/* Compiles a function declaration into a bytecode function stored as a global */
+static void compileFunctionDecl(AstNode* node, CompilerState* c) {
+    Chunk fnChunk;
+    initChunk(&fnChunk);
+
+    CompilerState fn;
+    fn.chunk = &fnChunk;
+    fn.hadError = false;
+    fn.localCount = 0;
+    fn.scopeDepth = 0;
+
+    beginScope(&fn);
+    for (int i = 0; i < node->as.funcDecl.paramCount; i++) {
+        addLocal(&fn, node->as.funcDecl.params[i], node->line);
+    }
+    compileBlock(node->as.funcDecl.body, &fn, false);
+    emitByte(&fn, OP_NULL, node->line);
+    emitByte(&fn, OP_RETURN, node->line);
+    endScope(&fn);
+
+    if (fn.hadError) {
+        freeChunk(&fnChunk);
+        compileError(c, node->line, "Could not compile function body.");
+        return;
+    }
+
+    AsterFunction* fnObj = (AsterFunction*)calloc(1, sizeof(AsterFunction));
+    if (!fnObj) {
+        freeChunk(&fnChunk);
+        compileError(c, node->line, "Out of memory.");
+        return;
+    }
+
+    fnObj->name = strdup(node->as.funcDecl.name);
+    fnObj->paramCount = node->as.funcDecl.paramCount;
+    fnObj->body = node->as.funcDecl.body;
+    fnObj->chunk = (struct Chunk*)malloc(sizeof(Chunk));
+    if (!fnObj->chunk) {
+        functionFree(fnObj);
+        freeChunk(&fnChunk);
+        compileError(c, node->line, "Out of memory.");
+        return;
+    }
+    *fnObj->chunk = fnChunk;
+    fnObj->hasBytecode = true;
+
+    if (fnObj->paramCount > 0) {
+        fnObj->params = (char**)calloc((size_t)fnObj->paramCount, sizeof(char*));
+        if (!fnObj->params) {
+            functionFree(fnObj);
+            compileError(c, node->line, "Out of memory.");
+            return;
+        }
+        for (int i = 0; i < fnObj->paramCount; i++) {
+            fnObj->params[i] = strdup(node->as.funcDecl.params[i]);
+        }
+    }
+
+    emitConstant(c, valueFunction(fnObj), node->line);
+    int global = identifierConstant(c, node->as.funcDecl.name, node->line);
+    emitBytes(c, OP_DEF_GLOBAL, (uint8_t)global, node->line);
+}
+
 /* Compiles a statement AST node to bytecode */
 static void compileStatement(AstNode* node, CompilerState* c) {
     if (!node || c->hadError) return;
@@ -259,7 +322,7 @@ static void compileStatement(AstNode* node, CompilerState* c) {
             }
             break;
         case NODE_FUNCTION_DECL:
-            compileError(c, node->line, "Function compilation deferred to Phase 6.");
+            compileFunctionDecl(node, c);
             break;
         case NODE_PRINT:
             compileExpression(node->as.printStmt.value, c);

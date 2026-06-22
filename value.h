@@ -5,6 +5,8 @@
 
 #include "ast.h"
 
+struct Chunk;
+
 /* Runtime value type enumeration */
 typedef enum {
     VAL_NUMBER, VAL_STRING, VAL_BOOL, VAL_NULL, VAL_FUNCTION
@@ -12,12 +14,14 @@ typedef enum {
 
 typedef struct AsterFunction AsterFunction;
 
-/* User-defined function for tree-walk execution */
+/* User-defined function for tree-walk or bytecode execution */
 struct AsterFunction {
     char* name;
     char** params;
     int paramCount;
     AstNode* body;
+    struct Chunk* chunk;
+    bool hasBytecode;
 };
 
 /* A dynamically-typed runtime value */
@@ -49,8 +53,11 @@ Value valueFunction(AsterFunction* fn);
 /* Deep-copies heap-owned parts of a value for independent storage */
 Value valueCopy(Value v);
 
-/* Frees heap-owned resources inside a runtime value */
+/* Frees heap-owned resources inside a runtime value (strings only) */
 void valueFree(Value v);
+
+/* Frees heap-owned resources including functions when releasing stored values */
+void valueRelease(Value v);
 
 /* Frees a user-defined function and its owned name/param strings */
 void functionFree(AsterFunction* fn);

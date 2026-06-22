@@ -14,13 +14,14 @@
 | Chunk | `chunk.h`, `chunk.c` | Bytecode container and constant pool |
 | Compiler | `compiler.h`, `compiler.c` | AST → bytecode compiler |
 | Debug | `debug.h`, `debug.c` | Bytecode disassembler |
+| VM | `vm.h`, `vm.c` | Stack-based bytecode virtual machine |
 | Main | `main.c` | Entry point and tests |
 
 Build with `make` (Unix) or:
 
 ```powershell
-gcc -std=c17 -Wall -Wextra -c main.c lexer.c ast.c parser.c value.c env.c interpreter.c chunk.c compiler.c debug.c
-gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o interpreter.o chunk.o compiler.o debug.o -lm
+gcc -std=c17 -Wall -Wextra -c main.c lexer.c ast.c parser.c value.c env.c interpreter.c chunk.c compiler.c debug.c vm.c
+gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o interpreter.o chunk.o compiler.o debug.o vm.o -lm
 ```
 
 ## Phase 1 — Lexer (Complete)
@@ -123,4 +124,28 @@ gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o 
 ### Next phase (Phase 5 — Stack-based VM)
 - `VM` struct with stack, call frames, globals
 - `run(VM*)` dispatch loop executing `Chunk` bytecode
-- All Phase 3 tests must pass through the VM*** End Patch}]} />
+- All Phase 3 tests must pass through the VM
+
+## Phase 5 — Stack-based VM (Complete)
+
+### What was built
+- `VM` with operand stack (`STACK_MAX 256`), call frames (`FRAMES_MAX 64`), and globals table
+- `run(VM*, Chunk*)` dispatch loop implementing every opcode
+- `runSourceVM()` — parse → compile → execute pipeline
+- Function compilation in `compiler.c` (bodies compiled to per-function `Chunk`)
+- `OP_CALL` / `OP_RETURN` with call frame push/pop
+
+### Phase 5 test results (all Phase 3 tests via VM)
+- **Test A:** `print(x + y)` → `30`
+- **Test B:** `greet("Aster")` → `Hello, Aster`
+- **Test C:** `while` loop → `0`, `1`, `2`
+- **Test D:** `if/else` → `yes`
+
+### Known limitations
+- No closures/upvalues yet (Phase 7)
+- Recursive calls work but no tail-call optimization
+- Tree-walk interpreter still available alongside VM
+
+### Next phase (Phase 6 — Functions & call stack)
+- Refine `AsterFunction` as first-class compiled function type
+- `factorial(5)` recursive test → `120`*** End Patch}]} />

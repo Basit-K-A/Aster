@@ -1,5 +1,7 @@
 #include "value.h"
 
+#include "chunk.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,16 +53,29 @@ Value valueCopy(Value v) {
     return v;
 }
 
-/* Frees heap-owned resources inside a runtime value */
+/* Frees heap-owned resources inside a runtime value (strings only) */
 void valueFree(Value v) {
     if (v.type == VAL_STRING) {
         free(v.as.string);
     }
 }
 
+/* Frees heap-owned resources including functions when releasing stored values */
+void valueRelease(Value v) {
+    if (v.type == VAL_STRING) {
+        free(v.as.string);
+    } else if (v.type == VAL_FUNCTION) {
+        functionFree(v.as.function);
+    }
+}
+
 /* Frees a user-defined function and its owned name/param strings */
 void functionFree(AsterFunction* fn) {
     if (!fn) return;
+    if (fn->hasBytecode && fn->chunk) {
+        freeChunk(fn->chunk);
+        free(fn->chunk);
+    }
     free(fn->name);
     for (int i = 0; i < fn->paramCount; i++) {
         free(fn->params[i]);
