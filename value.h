@@ -14,11 +14,11 @@ typedef enum {
 
 typedef struct AsterFunction AsterFunction;
 
-/* User-defined function for tree-walk or bytecode execution */
+/* Compiled or tree-walk user-defined function */
 struct AsterFunction {
     char* name;
+    int arity;
     char** params;
-    int paramCount;
     AstNode* body;
     struct Chunk* chunk;
     bool hasBytecode;

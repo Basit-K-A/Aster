@@ -277,7 +277,7 @@ static void compileFunctionDecl(AstNode* node, CompilerState* c) {
     }
 
     fnObj->name = strdup(node->as.funcDecl.name);
-    fnObj->paramCount = node->as.funcDecl.paramCount;
+    fnObj->arity = node->as.funcDecl.paramCount;
     fnObj->body = node->as.funcDecl.body;
     fnObj->chunk = (struct Chunk*)malloc(sizeof(Chunk));
     if (!fnObj->chunk) {
@@ -289,14 +289,14 @@ static void compileFunctionDecl(AstNode* node, CompilerState* c) {
     *fnObj->chunk = fnChunk;
     fnObj->hasBytecode = true;
 
-    if (fnObj->paramCount > 0) {
-        fnObj->params = (char**)calloc((size_t)fnObj->paramCount, sizeof(char*));
+    if (fnObj->arity > 0) {
+        fnObj->params = (char**)calloc((size_t)fnObj->arity, sizeof(char*));
         if (!fnObj->params) {
             functionFree(fnObj);
             compileError(c, node->line, "Out of memory.");
             return;
         }
-        for (int i = 0; i < fnObj->paramCount; i++) {
+        for (int i = 0; i < fnObj->arity; i++) {
             fnObj->params[i] = strdup(node->as.funcDecl.params[i]);
         }
     }

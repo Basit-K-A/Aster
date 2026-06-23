@@ -77,7 +77,7 @@ void functionFree(AsterFunction* fn) {
         free(fn->chunk);
     }
     free(fn->name);
-    for (int i = 0; i < fn->paramCount; i++) {
+    for (int i = 0; i < fn->arity; i++) {
         free(fn->params[i]);
     }
     free(fn->params);
@@ -110,16 +110,16 @@ AsterFunction* functionFromNode(AstNode* node) {
     if (!fn) return NULL;
 
     fn->name = strdup(node->as.funcDecl.name);
-    fn->paramCount = node->as.funcDecl.paramCount;
+    fn->arity = node->as.funcDecl.paramCount;
     fn->body = node->as.funcDecl.body;
 
-    if (fn->paramCount > 0) {
-        fn->params = (char**)calloc((size_t)fn->paramCount, sizeof(char*));
+    if (fn->arity > 0) {
+        fn->params = (char**)calloc((size_t)fn->arity, sizeof(char*));
         if (!fn->params) {
             functionFree(fn);
             return NULL;
         }
-        for (int i = 0; i < fn->paramCount; i++) {
+        for (int i = 0; i < fn->arity; i++) {
             fn->params[i] = strdup(node->as.funcDecl.params[i]);
         }
     }

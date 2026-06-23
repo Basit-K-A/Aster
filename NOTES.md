@@ -148,4 +148,27 @@ gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o 
 
 ### Next phase (Phase 6 — Functions & call stack)
 - Refine `AsterFunction` as first-class compiled function type
-- `factorial(5)` recursive test → `120`*** End Patch}]} />
+- `factorial(5)` recursive test → `120`
+
+## Phase 6 — Functions & Call Stack (Complete)
+
+### What was built
+- `AsterFunction` refined with `name`, `arity`, and compiled `Chunk*`
+- `CallFrame` stores `AsterFunction*`, `Chunk*`, `ip`, and `slots` for each activation
+- `OP_CALL` pushes a new frame; `OP_RETURN` pops frame and pushes return value
+- Full recursive call support (each frame gets its own local slots on the stack)
+
+### Phase 6 test result
+- `print(factorial(5))` → `120`
+
+### Regression
+- All Phase 3/5 VM tests still pass (A–D)
+
+### Known limitations
+- No closures/upvalues yet (Phase 7)
+- No tail-call optimization
+
+### Next phase (Phase 7 — Closures)
+- `Upvalue` struct for captured locals
+- `AsterClosure` wrapping function + upvalue array
+- `makeCounter()` test

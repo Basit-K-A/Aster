@@ -103,7 +103,11 @@ static bool globalGet(VM* vm, const char* name) {
 
 /* Begins executing a user-defined function with arguments already on the stack */
 static bool callFunction(VM* vm, AsterFunction* fn, int argCount) {
-    if (argCount != fn->paramCount) {
+    if (!fn || !fn->hasBytecode || !fn->chunk) {
+        runtimeError(vm, "Invalid function.");
+        return false;
+    }
+    if (argCount != fn->arity) {
         runtimeError(vm, "Wrong number of arguments.");
         return false;
     }
@@ -115,6 +119,7 @@ static bool callFunction(VM* vm, AsterFunction* fn, int argCount) {
     pop(vm);
 
     CallFrame* frame = &vm->frames[vm->frameCount++];
+    frame->function = fn;
     frame->chunk = fn->chunk;
     frame->ip = fn->chunk->code;
     frame->slots = vm->stackTop - argCount;
@@ -227,6 +232,7 @@ void freeVM(VM* vm) {
 InterpretResult run(VM* vm, Chunk* chunk) {
     vm->frameCount = 1;
     CallFrame* frame = &vm->frames[0];
+    frame->function = NULL;
     frame->chunk = chunk;
     frame->ip = chunk->code;
     frame->slots = vm->stack;

@@ -4,14 +4,16 @@
 #include <stdbool.h>
 
 #include "chunk.h"
+#include "value.h"
 
 #define STACK_MAX 256
 #define FRAMES_MAX 64
 
 typedef struct VM VM;
 
-/* A single call frame with instruction pointer and stack slot base */
+/* A single call frame referencing a function and its stack slot base */
 typedef struct {
+    AsterFunction* function;
     Chunk* chunk;
     uint8_t* ip;
     Value* slots;

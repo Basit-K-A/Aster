@@ -103,7 +103,7 @@ static Value callFunction(AsterFunction* fn, Value* args, int argCount, Interpre
         return valueNull();
     }
 
-    if (argCount != fn->paramCount) {
+    if (argCount != fn->arity) {
         interpError(interp, 0, "Wrong number of arguments.");
         return valueNull();
     }
@@ -111,7 +111,7 @@ static Value callFunction(AsterFunction* fn, Value* args, int argCount, Interpre
     Env* callEnv = envCreate(env);
     if (!callEnv) return valueNull();
 
-    for (int i = 0; i < fn->paramCount; i++) {
+    for (int i = 0; i < fn->arity; i++) {
         if (!envDefine(callEnv, fn->params[i], args[i])) {
             envFree(callEnv);
             interpError(interp, 0, "Could not bind parameter.");
