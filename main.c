@@ -1,23 +1,27 @@
-/* Aster Language — entry point and Phase 6 function tests */
+/* Aster Language — entry point and Phase 7 closure tests */
 
 #include <stdio.h>
 
 #include "vm.h"
 
 int main(void) {
-    printf("=== Phase 6 Functions & Call Stack ===\n\n");
+    printf("=== Phase 7 Closures ===\n\n");
 
     bool ok = runSourceVM(
-        "function factorial(n) {\n"
-        "if (n <= 1) { return 1; }\n"
-        "return n * factorial(n - 1);\n"
+        "function makeCounter() {\n"
+        "  let count = 0;\n"
+        "  function inc() { count = count + 1; return count; }\n"
+        "  return inc;\n"
         "}\n"
-        "print(factorial(5));\n",
-        "Phase 6 Test");
+        "let c = makeCounter();\n"
+        "print(c());\n"
+        "print(c());\n"
+        "print(c());\n",
+        "Phase 7 Test");
 
     if (!ok) return 1;
 
-    printf("=== Phase 3/5 regression (VM) ===\n\n");
+    printf("=== Phase 3/5/6 regression (VM) ===\n\n");
 
     ok = runSourceVM(
         "let x = 10;\n"
@@ -39,8 +43,16 @@ int main(void) {
         "if (5 > 3) { print(\"yes\"); } else { print(\"no\"); }\n",
         "Test D") && ok;
 
+    ok = runSourceVM(
+        "function factorial(n) {\n"
+        "if (n <= 1) { return 1; }\n"
+        "return n * factorial(n - 1);\n"
+        "}\n"
+        "print(factorial(5));\n",
+        "Test E (factorial)") && ok;
+
     if (!ok) return 1;
 
-    printf("=== Phase 6 complete. Run tests before continuing. ===\n");
+    printf("=== Phase 7 complete. Run tests before continuing. ===\n");
     return 0;
 }

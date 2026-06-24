@@ -45,6 +45,14 @@ Value valueFunction(AsterFunction* fn) {
     return v;
 }
 
+/* Returns a closure runtime value without taking ownership of the struct */
+Value valueClosure(AsterClosure* closure) {
+    Value v;
+    v.type = VAL_CLOSURE;
+    v.as.closure = closure;
+    return v;
+}
+
 /* Deep-copies heap-owned parts of a value for independent storage */
 Value valueCopy(Value v) {
     if (v.type == VAL_STRING && v.as.string) {
@@ -60,12 +68,14 @@ void valueFree(Value v) {
     }
 }
 
-/* Frees heap-owned resources including functions when releasing stored values */
+/* Frees heap-owned resources including functions and closures when releasing stored values */
 void valueRelease(Value v) {
     if (v.type == VAL_STRING) {
         free(v.as.string);
     } else if (v.type == VAL_FUNCTION) {
         functionFree(v.as.function);
+    } else if (v.type == VAL_CLOSURE) {
+        closureFree(v.as.closure);
     }
 }
 
@@ -84,6 +94,13 @@ void functionFree(AsterFunction* fn) {
     free(fn);
 }
 
+/* Frees a closure without freeing its underlying function */
+void closureFree(AsterClosure* closure) {
+    if (!closure) return;
+    free(closure->upvalues);
+    free(closure);
+}
+
 /* Converts a number to a newly allocated string */
 static char* numberToString(double n) {
     char buffer[64];
@@ -100,6 +117,9 @@ static char* valueToString(Value v) {
         case VAL_NULL:   return strdup("null");
         case VAL_FUNCTION:
             return strdup(v.as.function && v.as.function->name ? v.as.function->name : "<fn>");
+        case VAL_CLOSURE:
+            return strdup(v.as.closure && v.as.closure->function && v.as.closure->function->name
+                ? v.as.closure->function->name : "<closure>");
     }
     return strdup("");
 }
@@ -145,6 +165,11 @@ void printValue(Value v) {
         case VAL_FUNCTION:
             printf("<fn %s>\n", v.as.function && v.as.function->name ? v.as.function->name : "");
             break;
+        case VAL_CLOSURE:
+            printf("<closure %s>\n",
+                v.as.closure && v.as.closure->function && v.as.closure->function->name
+                    ? v.as.closure->function->name : "");
+            break;
     }
 }
 
@@ -160,6 +185,7 @@ bool valuesEqual(Value a, Value b) {
             if (!a.as.string || !b.as.string) return a.as.string == b.as.string;
             return strcmp(a.as.string, b.as.string) == 0;
         case VAL_FUNCTION: return a.as.function == b.as.function;
+        case VAL_CLOSURE:  return a.as.closure == b.as.closure;
     }
     return false;
 }
@@ -172,6 +198,7 @@ bool isTruthy(Value v) {
         case VAL_NUMBER:   return v.as.number != 0.0;
         case VAL_STRING:   return v.as.string != NULL && v.as.string[0] != '\0';
         case VAL_FUNCTION: return true;
+        case VAL_CLOSURE:  return true;
     }
     return false;
 }

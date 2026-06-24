@@ -52,7 +52,8 @@ void freeChunk(Chunk* chunk) {
     free(chunk->code);
     free(chunk->lines);
     for (int i = 0; i < chunk->constCount; i++) {
-        if (chunk->constants[i].type == VAL_FUNCTION) continue;
+        if (chunk->constants[i].type == VAL_FUNCTION ||
+            chunk->constants[i].type == VAL_CLOSURE) continue;
         valueFree(chunk->constants[i]);
     }
     free(chunk->constants);

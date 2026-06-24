@@ -11,15 +11,25 @@
 typedef struct {
     char* name;
     int depth;
+    bool isCaptured;
 } Local;
 
-/* Extended compiler state with scope and local variable tracking */
+/* Upvalue descriptor recorded while compiling a function */
 typedef struct {
+    uint8_t index;
+    bool isLocal;
+} UpvalueDesc;
+
+/* Extended compiler state with enclosing function and upvalue tracking */
+typedef struct CompilerState {
     Chunk* chunk;
     bool hadError;
     Local locals[MAX_LOCALS];
     int localCount;
     int scopeDepth;
+    UpvalueDesc upvalues[MAX_LOCALS];
+    int upvalueCount;
+    struct CompilerState* enclosing;
 } CompilerState;
 
 /* Reports a compile error at the given source line */
@@ -95,10 +105,16 @@ static void beginScope(CompilerState* c) {
     c->scopeDepth++;
 }
 
-/* Exits the current scope and discards locals declared within it */
-static void endScope(CompilerState* c) {
+/* Exits the current scope, closing or popping locals as needed */
+static void endScope(CompilerState* c, int line) {
     c->scopeDepth--;
+
     while (c->localCount > 0 && c->locals[c->localCount - 1].depth > c->scopeDepth) {
+        if (c->locals[c->localCount - 1].isCaptured) {
+            emitByte(c, OP_CLOSE_UPVALUE, line);
+        } else {
+            emitByte(c, OP_POP, line);
+        }
         free(c->locals[c->localCount - 1].name);
         c->localCount--;
     }
@@ -112,6 +128,7 @@ static void addLocal(CompilerState* c, const char* name, int line) {
     }
     c->locals[c->localCount].name = strdup(name);
     c->locals[c->localCount].depth = c->scopeDepth;
+    c->locals[c->localCount].isCaptured = false;
     c->localCount++;
 }
 
@@ -125,8 +142,46 @@ static int resolveLocal(CompilerState* c, const char* name) {
     return -1;
 }
 
+/* Adds an upvalue descriptor to the function being compiled */
+static int addUpvalue(CompilerState* c, bool isLocal, uint8_t index, int line) {
+    for (int i = 0; i < c->upvalueCount; i++) {
+        UpvalueDesc* upvalue = &c->upvalues[i];
+        if (upvalue->isLocal == isLocal && upvalue->index == index) {
+            return i;
+        }
+    }
+
+    if (c->upvalueCount >= MAX_LOCALS) {
+        compileError(c, line, "Too many upvalues.");
+        return 0;
+    }
+
+    c->upvalues[c->upvalueCount].isLocal = isLocal;
+    c->upvalues[c->upvalueCount].index = index;
+    return c->upvalueCount++;
+}
+
+/* Resolves an upvalue in an enclosing scope, returning its index or -1 */
+static int resolveUpvalue(CompilerState* c, const char* name, int line) {
+    if (!c->enclosing) return -1;
+
+    int local = resolveLocal(c->enclosing, name);
+    if (local != -1) {
+        c->enclosing->locals[local].isCaptured = true;
+        return addUpvalue(c, true, (uint8_t)local, line);
+    }
+
+    int upvalue = resolveUpvalue(c->enclosing, name, line);
+    if (upvalue != -1) {
+        return addUpvalue(c, false, (uint8_t)upvalue, line);
+    }
+
+    return -1;
+}
+
 static void compileExpression(AstNode* node, CompilerState* c);
 static void compileStatement(AstNode* node, CompilerState* c);
+static void compileFunctionDecl(AstNode* node, CompilerState* c);
 
 /* Compiles a binary AST node to stack-based arithmetic/logic opcodes */
 static void compileBinary(AstNode* node, CompilerState* c) {
@@ -193,8 +248,13 @@ static void compileExpression(AstNode* node, CompilerState* c) {
             if (local != -1) {
                 emitBytes(c, OP_GET_LOCAL, (uint8_t)local, node->line);
             } else {
-                int global = identifierConstant(c, node->as.name, node->line);
-                emitBytes(c, OP_GET_GLOBAL, (uint8_t)global, node->line);
+                int upvalue = resolveUpvalue(c, node->as.name, node->line);
+                if (upvalue != -1) {
+                    emitBytes(c, OP_GET_UPVALUE, (uint8_t)upvalue, node->line);
+                } else {
+                    int global = identifierConstant(c, node->as.name, node->line);
+                    emitBytes(c, OP_GET_GLOBAL, (uint8_t)global, node->line);
+                }
             }
             break;
         }
@@ -211,8 +271,13 @@ static void compileExpression(AstNode* node, CompilerState* c) {
             if (local != -1) {
                 emitBytes(c, OP_SET_LOCAL, (uint8_t)local, node->line);
             } else {
-                int global = identifierConstant(c, node->as.assignment.name, node->line);
-                emitBytes(c, OP_SET_GLOBAL, (uint8_t)global, node->line);
+                int upvalue = resolveUpvalue(c, node->as.assignment.name, node->line);
+                if (upvalue != -1) {
+                    emitBytes(c, OP_SET_UPVALUE, (uint8_t)upvalue, node->line);
+                } else {
+                    int global = identifierConstant(c, node->as.assignment.name, node->line);
+                    emitBytes(c, OP_SET_GLOBAL, (uint8_t)global, node->line);
+                }
             }
             break;
         }
@@ -240,10 +305,26 @@ static void compileBlock(AstNode* node, CompilerState* c, bool createScope) {
         if (c->hadError) break;
     }
 
-    if (createScope) endScope(c);
+    if (createScope) endScope(c, node->line);
 }
 
-/* Compiles a function declaration into a bytecode function stored as a global */
+/* Emits OP_CLOSURE with upvalue descriptors for a compiled function */
+static void emitClosure(CompilerState* c, AsterFunction* fn, CompilerState* fnCompiler, int line) {
+    int constant = addConstant(c->chunk, valueFunction(fn));
+    if (constant > 255) {
+        compileError(c, line, "Too many constants in one chunk.");
+        return;
+    }
+
+    emitByte(c, OP_CLOSURE, line);
+    emitByte(c, (uint8_t)constant, line);
+    for (int i = 0; i < fnCompiler->upvalueCount; i++) {
+        emitByte(c, fnCompiler->upvalues[i].isLocal ? 1 : 0, line);
+        emitByte(c, fnCompiler->upvalues[i].index, line);
+    }
+}
+
+/* Compiles a function declaration into a closure stored locally or globally */
 static void compileFunctionDecl(AstNode* node, CompilerState* c) {
     Chunk fnChunk;
     initChunk(&fnChunk);
@@ -253,6 +334,8 @@ static void compileFunctionDecl(AstNode* node, CompilerState* c) {
     fn.hadError = false;
     fn.localCount = 0;
     fn.scopeDepth = 0;
+    fn.upvalueCount = 0;
+    fn.enclosing = c;
 
     beginScope(&fn);
     for (int i = 0; i < node->as.funcDecl.paramCount; i++) {
@@ -261,7 +344,7 @@ static void compileFunctionDecl(AstNode* node, CompilerState* c) {
     compileBlock(node->as.funcDecl.body, &fn, false);
     emitByte(&fn, OP_NULL, node->line);
     emitByte(&fn, OP_RETURN, node->line);
-    endScope(&fn);
+    endScope(&fn, node->line);
 
     if (fn.hadError) {
         freeChunk(&fnChunk);
@@ -278,6 +361,7 @@ static void compileFunctionDecl(AstNode* node, CompilerState* c) {
 
     fnObj->name = strdup(node->as.funcDecl.name);
     fnObj->arity = node->as.funcDecl.paramCount;
+    fnObj->upvalueCount = fn.upvalueCount;
     fnObj->body = node->as.funcDecl.body;
     fnObj->chunk = (struct Chunk*)malloc(sizeof(Chunk));
     if (!fnObj->chunk) {
@@ -301,9 +385,15 @@ static void compileFunctionDecl(AstNode* node, CompilerState* c) {
         }
     }
 
-    emitConstant(c, valueFunction(fnObj), node->line);
-    int global = identifierConstant(c, node->as.funcDecl.name, node->line);
-    emitBytes(c, OP_DEF_GLOBAL, (uint8_t)global, node->line);
+    emitClosure(c, fnObj, &fn, node->line);
+
+    if (c->scopeDepth == 0) {
+        int global = identifierConstant(c, node->as.funcDecl.name, node->line);
+        emitBytes(c, OP_DEF_GLOBAL, (uint8_t)global, node->line);
+    } else {
+        addLocal(c, node->as.funcDecl.name, node->line);
+        emitBytes(c, OP_DEF_LOCAL, (uint8_t)(c->localCount - 1), node->line);
+    }
 }
 
 /* Compiles a statement AST node to bytecode */
@@ -368,7 +458,7 @@ static void compileStatement(AstNode* node, CompilerState* c) {
 }
 
 /* Compiles a program AST root and appends OP_HALT */
-void compileProgram(AstNode* program, CompilerState* c) {
+static void compileProgram(AstNode* program, CompilerState* c) {
     if (!program || program->type != NODE_BLOCK) {
         compileError(c, 0, "Expected program block.");
         return;
@@ -385,6 +475,8 @@ void compile(AstNode* node, Compiler* compiler) {
     state.hadError = compiler->hadError;
     state.localCount = 0;
     state.scopeDepth = 0;
+    state.upvalueCount = 0;
+    state.enclosing = NULL;
 
     if (node && node->type == NODE_BLOCK) {
         compileProgram(node, &state);

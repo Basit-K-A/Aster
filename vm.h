@@ -11,15 +11,15 @@
 
 typedef struct VM VM;
 
-/* A single call frame referencing a function and its stack slot base */
+/* A single call frame referencing a closure and its stack slot base */
 typedef struct {
-    AsterFunction* function;
+    AsterClosure* closure;
     Chunk* chunk;
     uint8_t* ip;
     Value* slots;
 } CallFrame;
 
-/* Stack-based virtual machine with globals and call frames */
+/* Stack-based virtual machine with globals, call frames, and open upvalues */
 struct VM {
     CallFrame frames[FRAMES_MAX];
     int frameCount;
@@ -28,6 +28,7 @@ struct VM {
     char* globalKeys[256];
     Value globalVals[256];
     int globalCount;
+    Upvalue* openUpvalues;
     bool hadError;
 };
 

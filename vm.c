@@ -52,6 +52,78 @@ static uint16_t readShort(CallFrame* frame) {
     return value;
 }
 
+/* Returns the value stored in an upvalue, whether open or closed */
+static Value upvalueGet(Upvalue* upvalue) {
+    return upvalue->location ? *upvalue->location : upvalue->closed;
+}
+
+/* Assigns a value into an upvalue, whether open or closed */
+static void upvalueSet(Upvalue* upvalue, Value value) {
+    if (upvalue->location) {
+        *upvalue->location = value;
+    } else {
+        if (upvalue->closed.type == VAL_STRING) {
+            valueFree(upvalue->closed);
+        }
+        upvalue->closed = valueCopy(value);
+    }
+}
+
+/* Captures a local variable slot as an open upvalue */
+static Upvalue* captureUpvalue(VM* vm, Value* local) {
+    Upvalue* prev = NULL;
+    Upvalue* upvalue = vm->openUpvalues;
+
+    while (upvalue != NULL && upvalue->location > local) {
+        prev = upvalue;
+        upvalue = upvalue->next;
+    }
+
+    if (upvalue != NULL && upvalue->location == local) {
+        return upvalue;
+    }
+
+    Upvalue* created = (Upvalue*)calloc(1, sizeof(Upvalue));
+    if (!created) return NULL;
+    created->location = local;
+    created->next = upvalue;
+
+    if (prev == NULL) {
+        vm->openUpvalues = created;
+    } else {
+        prev->next = created;
+    }
+
+    return created;
+}
+
+/* Closes open upvalues at or above the given stack location */
+static void closeUpvalues(VM* vm, Value* last) {
+    while (vm->openUpvalues != NULL && vm->openUpvalues->location >= last) {
+        Upvalue* upvalue = vm->openUpvalues;
+        upvalue->closed = valueCopy(*upvalue->location);
+        upvalue->location = NULL;
+        vm->openUpvalues = upvalue->next;
+    }
+}
+
+/* Creates a closure from a function prototype and captured upvalues */
+static AsterClosure* closureNew(AsterFunction* function, int upvalueCount) {
+    AsterClosure* closure = (AsterClosure*)calloc(1, sizeof(AsterClosure));
+    if (!closure) return NULL;
+
+    closure->function = function;
+    closure->upvalueCount = upvalueCount;
+    if (upvalueCount > 0) {
+        closure->upvalues = (Upvalue**)calloc((size_t)upvalueCount, sizeof(Upvalue*));
+        if (!closure->upvalues) {
+            closureFree(closure);
+            return NULL;
+        }
+    }
+    return closure;
+}
+
 /* Defines a new global variable in the VM */
 static bool globalDefine(VM* vm, const char* name, Value value) {
     if (vm->globalCount >= 256) {
@@ -72,15 +144,22 @@ static bool globalDefine(VM* vm, const char* name, Value value) {
     return true;
 }
 
+/* Releases a stored global value without removing the binding */
+static void globalReleaseValue(Value value) {
+    if (value.type == VAL_FUNCTION) {
+        functionFree(value.as.function);
+    } else if (value.type == VAL_CLOSURE) {
+        closureFree(value.as.closure);
+    } else {
+        valueFree(value);
+    }
+}
+
 /* Assigns a value to an existing global variable */
 static bool globalSet(VM* vm, const char* name, Value value) {
     for (int i = 0; i < vm->globalCount; i++) {
         if (strcmp(vm->globalKeys[i], name) == 0) {
-            if (vm->globalVals[i].type == VAL_FUNCTION) {
-                functionFree(vm->globalVals[i].as.function);
-            } else {
-                valueFree(vm->globalVals[i]);
-            }
+            globalReleaseValue(vm->globalVals[i]);
             vm->globalVals[i] = valueCopy(value);
             return true;
         }
@@ -101,8 +180,9 @@ static bool globalGet(VM* vm, const char* name) {
     return false;
 }
 
-/* Begins executing a user-defined function with arguments already on the stack */
-static bool callFunction(VM* vm, AsterFunction* fn, int argCount) {
+/* Begins executing a closure with arguments already on the stack */
+static bool callClosure(VM* vm, AsterClosure* closure, int argCount) {
+    AsterFunction* fn = closure->function;
     if (!fn || !fn->hasBytecode || !fn->chunk) {
         runtimeError(vm, "Invalid function.");
         return false;
@@ -119,7 +199,7 @@ static bool callFunction(VM* vm, AsterFunction* fn, int argCount) {
     pop(vm);
 
     CallFrame* frame = &vm->frames[vm->frameCount++];
-    frame->function = fn;
+    frame->closure = closure;
     frame->chunk = fn->chunk;
     frame->ip = fn->chunk->code;
     frame->slots = vm->stackTop - argCount;
@@ -215,15 +295,13 @@ void initVM(VM* vm) {
     vm->stackTop = vm->stack;
 }
 
-/* Frees all globals owned by the virtual machine */
+/* Frees all globals and open upvalues owned by the virtual machine */
 void freeVM(VM* vm) {
+    closeUpvalues(vm, vm->stack);
+
     for (int i = 0; i < vm->globalCount; i++) {
         free(vm->globalKeys[i]);
-        if (vm->globalVals[i].type == VAL_FUNCTION) {
-            functionFree(vm->globalVals[i].as.function);
-        } else {
-            valueFree(vm->globalVals[i]);
-        }
+        globalReleaseValue(vm->globalVals[i]);
     }
     initVM(vm);
 }
@@ -232,7 +310,7 @@ void freeVM(VM* vm) {
 InterpretResult run(VM* vm, Chunk* chunk) {
     vm->frameCount = 1;
     CallFrame* frame = &vm->frames[0];
-    frame->function = NULL;
+    frame->closure = NULL;
     frame->chunk = chunk;
     frame->ip = chunk->code;
     frame->slots = vm->stack;
@@ -343,6 +421,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             case OP_DEF_LOCAL: {
                 uint8_t slot = readByte(frame);
                 frame->slots[slot] = pop(vm);
+                vm->stackTop = frame->slots + slot + 1;
                 break;
             }
             case OP_GET_LOCAL: {
@@ -355,6 +434,20 @@ InterpretResult run(VM* vm, Chunk* chunk) {
                 frame->slots[slot] = peek(vm, 0);
                 break;
             }
+            case OP_GET_UPVALUE: {
+                uint8_t slot = readByte(frame);
+                push(vm, valueCopy(upvalueGet(frame->closure->upvalues[slot])));
+                break;
+            }
+            case OP_SET_UPVALUE: {
+                uint8_t slot = readByte(frame);
+                upvalueSet(frame->closure->upvalues[slot], peek(vm, 0));
+                break;
+            }
+            case OP_CLOSE_UPVALUE:
+                closeUpvalues(vm, vm->stackTop - 1);
+                pop(vm);
+                break;
             case OP_JUMP:
                 frame->ip += readShort(frame);
                 break;
@@ -371,14 +464,40 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             case OP_LOOP:
                 frame->ip -= readShort(frame);
                 break;
+            case OP_CLOSURE: {
+                uint8_t constant = readByte(frame);
+                AsterFunction* function = frame->chunk->constants[constant].as.function;
+                AsterClosure* closure = closureNew(function, function->upvalueCount);
+                if (!closure) {
+                    runtimeError(vm, "Out of memory.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                for (int i = 0; i < function->upvalueCount; i++) {
+                    uint8_t isLocal = readByte(frame);
+                    uint8_t index = readByte(frame);
+                    if (isLocal) {
+                        closure->upvalues[i] = captureUpvalue(vm, frame->slots + index);
+                    } else {
+                        closure->upvalues[i] = frame->closure->upvalues[index];
+                    }
+                }
+
+                push(vm, valueClosure(closure));
+                break;
+            }
             case OP_CALL: {
                 uint8_t argCount = readByte(frame);
                 Value callee = peek(vm, 0);
-                if (callee.type != VAL_FUNCTION) {
-                    runtimeError(vm, "Can only call functions.");
+                if (callee.type == VAL_CLOSURE) {
+                    if (!callClosure(vm, callee.as.closure, argCount)) {
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                } else if (callee.type == VAL_FUNCTION) {
+                    runtimeError(vm, "Functions must be wrapped in a closure before calling.");
                     return INTERPRET_RUNTIME_ERROR;
-                }
-                if (!callFunction(vm, callee.as.function, argCount)) {
+                } else {
+                    runtimeError(vm, "Can only call functions.");
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 frame = &vm->frames[vm->frameCount - 1];
@@ -386,6 +505,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             }
             case OP_RETURN: {
                 Value result = pop(vm);
+                closeUpvalues(vm, frame->slots);
                 vm->frameCount--;
                 if (vm->frameCount == 0) {
                     push(vm, result);

@@ -37,6 +37,10 @@ static const char* opcodeName(OpCode op) {
         case OP_LOOP:           return "OP_LOOP";
         case OP_CALL:           return "OP_CALL";
         case OP_RETURN:         return "OP_RETURN";
+        case OP_CLOSURE:        return "OP_CLOSURE";
+        case OP_GET_UPVALUE:    return "OP_GET_UPVALUE";
+        case OP_SET_UPVALUE:    return "OP_SET_UPVALUE";
+        case OP_CLOSE_UPVALUE:  return "OP_CLOSE_UPVALUE";
         case OP_HALT:           return "OP_HALT";
     }
     return "OP_UNKNOWN";
@@ -60,6 +64,9 @@ static void printConstant(Chunk* chunk, int index) {
             break;
         case VAL_FUNCTION:
             printf("<fn %s>", value.as.function && value.as.function->name ? value.as.function->name : "");
+            break;
+        case VAL_CLOSURE:
+            printf("<closure>");
             break;
     }
 }
@@ -124,6 +131,30 @@ static int disassembleInstruction(Chunk* chunk, int offset) {
             next = offset + 2;
             break;
         }
+        case OP_CLOSURE: {
+            uint8_t constant = chunk->code[offset + 1];
+            printf("%3d '", constant);
+            printConstant(chunk, constant);
+            printf("'");
+            next = offset + 2;
+            Value fnValue = chunk->constants[constant];
+            if (fnValue.type == VAL_FUNCTION && fnValue.as.function) {
+                for (int i = 0; i < fnValue.as.function->upvalueCount; i++) {
+                    uint8_t isLocal = chunk->code[next];
+                    uint8_t index = chunk->code[next + 1];
+                    printf(" %s:%d", isLocal ? "local" : "upvalue", index);
+                    next += 2;
+                }
+            }
+            break;
+        }
+        case OP_GET_UPVALUE:
+        case OP_SET_UPVALUE: {
+            uint8_t slot = chunk->code[offset + 1];
+            printf("%3d", slot);
+            next = offset + 2;
+            break;
+        }
         default:
             break;
     }
@@ -137,5 +168,19 @@ void disassemble(Chunk* chunk, const char* name) {
     printf("== %s ==\n", name);
     for (int offset = 0; offset < chunk->count;) {
         offset = disassembleInstruction(chunk, offset);
+    }
+}
+
+/* Disassembles a chunk and any nested function chunks in its constant pool */
+void disassembleAll(Chunk* chunk, const char* name) {
+    disassemble(chunk, name);
+    for (int i = 0; i < chunk->constCount; i++) {
+        Value value = chunk->constants[i];
+        if (value.type == VAL_FUNCTION && value.as.function && value.as.function->chunk) {
+            char label[256];
+            const char* fnName = value.as.function->name ? value.as.function->name : "?";
+            snprintf(label, sizeof(label), "%s/<fn %s>", name, fnName);
+            disassembleAll(value.as.function->chunk, label);
+        }
     }
 }

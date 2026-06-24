@@ -168,7 +168,25 @@ gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o 
 - No closures/upvalues yet (Phase 7)
 - No tail-call optimization
 
-### Next phase (Phase 7 — Closures)
-- `Upvalue` struct for captured locals
-- `AsterClosure` wrapping function + upvalue array
-- `makeCounter()` test
+## Phase 7 — Closures (Complete)
+
+### What was built
+- `Upvalue` struct with open (`location`) and closed (`closed`) states, linked list for open upvalues
+- `AsterClosure` wrapping `AsterFunction*` plus captured `Upvalue**` array
+- New opcodes: `OP_CLOSURE`, `OP_GET_UPVALUE`, `OP_SET_UPVALUE`, `OP_CLOSE_UPVALUE`
+- Compiler upvalue resolution (`resolveUpvalue`, `addUpvalue`, `isCaptured` locals)
+- VM `captureUpvalue()` / `closeUpvalues()` runtime; `OP_CALL` accepts `VAL_CLOSURE`
+- Nested functions stored as locals when inside another function body
+
+### Phase 7 test result
+- `makeCounter()` → `print(c())` three times outputs `1`, `2`, `3`
+
+### Regression
+- All Phase 3/5/6 VM tests still pass (A–E)
+
+### Known limitations
+- Tree-walk interpreter does not support closures yet
+- No tail-call optimization
+
+### Next phase (Phase 8 — Classes)
+- Class declarations, methods, and `this`

@@ -9,19 +9,29 @@ struct Chunk;
 
 /* Runtime value type enumeration */
 typedef enum {
-    VAL_NUMBER, VAL_STRING, VAL_BOOL, VAL_NULL, VAL_FUNCTION
+    VAL_NUMBER, VAL_STRING, VAL_BOOL, VAL_NULL, VAL_FUNCTION, VAL_CLOSURE
 } ValueType;
 
 typedef struct AsterFunction AsterFunction;
+typedef struct AsterClosure AsterClosure;
+typedef struct Upvalue Upvalue;
 
-/* Compiled or tree-walk user-defined function */
+/* Compiled user-defined function object */
 struct AsterFunction {
     char* name;
     int arity;
+    int upvalueCount;
     char** params;
     AstNode* body;
     struct Chunk* chunk;
     bool hasBytecode;
+};
+
+/* Function plus captured upvalues */
+struct AsterClosure {
+    AsterFunction* function;
+    Upvalue** upvalues;
+    int upvalueCount;
 };
 
 /* A dynamically-typed runtime value */
@@ -32,8 +42,16 @@ typedef struct {
         char* string;
         bool boolean;
         AsterFunction* function;
+        AsterClosure* closure;
     } as;
 } Value;
+
+/* An open or closed captured variable slot */
+struct Upvalue {
+    Value* location;
+    Value closed;
+    struct Upvalue* next;
+};
 
 /* Returns a null runtime value */
 Value valueNull(void);
@@ -50,17 +68,23 @@ Value valueStringOwned(char* s);
 /* Returns a function runtime value without taking ownership of the struct */
 Value valueFunction(AsterFunction* fn);
 
+/* Returns a closure runtime value without taking ownership of the struct */
+Value valueClosure(AsterClosure* closure);
+
 /* Deep-copies heap-owned parts of a value for independent storage */
 Value valueCopy(Value v);
 
 /* Frees heap-owned resources inside a runtime value (strings only) */
 void valueFree(Value v);
 
-/* Frees heap-owned resources including functions when releasing stored values */
+/* Frees heap-owned resources including functions and closures when releasing stored values */
 void valueRelease(Value v);
 
 /* Frees a user-defined function and its owned name/param strings */
 void functionFree(AsterFunction* fn);
+
+/* Frees a closure without freeing its underlying function */
+void closureFree(AsterClosure* closure);
 
 /* Builds an AsterFunction object from a function declaration AST node */
 AsterFunction* functionFromNode(AstNode* node);
