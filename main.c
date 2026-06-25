@@ -1,27 +1,25 @@
-/* Aster Language — entry point and Phase 7 closure tests */
+/* Aster Language — entry point and Phase 8 class tests */
 
 #include <stdio.h>
 
 #include "vm.h"
 
 int main(void) {
-    printf("=== Phase 7 Closures ===\n\n");
+    printf("=== Phase 8 Classes & Instances ===\n\n");
 
     bool ok = runSourceVM(
-        "function makeCounter() {\n"
-        "  let count = 0;\n"
-        "  function inc() { count = count + 1; return count; }\n"
-        "  return inc;\n"
+        "class Dog {\n"
+        "  function bark() { print(\"Woof!\"); }\n"
         "}\n"
-        "let c = makeCounter();\n"
-        "print(c());\n"
-        "print(c());\n"
-        "print(c());\n",
-        "Phase 7 Test");
+        "let d = Dog();\n"
+        "d.name = \"Rex\";\n"
+        "print(d.name);\n"
+        "d.bark();\n",
+        "Phase 8 Test");
 
     if (!ok) return 1;
 
-    printf("=== Phase 3/5/6 regression (VM) ===\n\n");
+    printf("=== Phase 3/5/6/7 regression (VM) ===\n\n");
 
     ok = runSourceVM(
         "let x = 10;\n"
@@ -51,8 +49,20 @@ int main(void) {
         "print(factorial(5));\n",
         "Test E (factorial)") && ok;
 
+    ok = runSourceVM(
+        "function makeCounter() {\n"
+        "  let count = 0;\n"
+        "  function inc() { count = count + 1; return count; }\n"
+        "  return inc;\n"
+        "}\n"
+        "let c = makeCounter();\n"
+        "print(c());\n"
+        "print(c());\n"
+        "print(c());\n",
+        "Test F (closures)") && ok;
+
     if (!ok) return 1;
 
-    printf("=== Phase 7 complete. Run tests before continuing. ===\n");
+    printf("=== Phase 8 complete. Run tests before continuing. ===\n");
     return 0;
 }

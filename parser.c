@@ -131,6 +131,7 @@ static void parserSynchronize(Parser* p) {
         switch (p->current.type) {
             case TOKEN_LET:
             case TOKEN_FUNCTION:
+            case TOKEN_CLASS:
             case TOKEN_IF:
             case TOKEN_WHILE:
             case TOKEN_RETURN:
@@ -194,6 +195,14 @@ static AstNode* primary(Parser* p) {
         return node;
     }
 
+    if (parserMatch(p, TOKEN_THIS)) {
+        AstNode* node = (AstNode*)calloc(1, sizeof(AstNode));
+        if (!node) return NULL;
+        node->type = NODE_THIS;
+        node->line = p->previous.line;
+        return node;
+    }
+
     if (parserMatch(p, TOKEN_IDENTIFIER)) {
         AstNode* node = (AstNode*)calloc(1, sizeof(AstNode));
         if (!node) return NULL;
@@ -211,6 +220,46 @@ static AstNode* primary(Parser* p) {
 
     parserErrorAtCurrent(p, "Expected expression.");
     return NULL;
+}
+
+/* Finishes parsing a method invocation on a receiver expression */
+static AstNode* finishInvoke(Parser* p, AstNode* receiver, char* name) {
+    AstNode** args = NULL;
+    int argCount = 0;
+    int argCapacity = 0;
+
+    if (!parserCheck(p, TOKEN_RPAREN)) {
+        do {
+            if (argCount >= argCapacity) {
+                int newCap = argCapacity < 4 ? 4 : argCapacity * 2;
+                AstNode** newArgs = (AstNode**)realloc(args, (size_t)newCap * sizeof(AstNode*));
+                if (!newArgs) {
+                    free(args);
+                    free(name);
+                    return NULL;
+                }
+                args = newArgs;
+                argCapacity = newCap;
+            }
+            args[argCount++] = expression(p);
+        } while (parserMatch(p, TOKEN_COMMA));
+    }
+
+    parserConsume(p, TOKEN_RPAREN, "Expected ')' after arguments.");
+
+    AstNode* node = (AstNode*)calloc(1, sizeof(AstNode));
+    if (!node) {
+        free(args);
+        free(name);
+        return NULL;
+    }
+    node->type = NODE_INVOKE;
+    node->line = receiver ? receiver->line : p->previous.line;
+    node->as.invoke.receiver = receiver;
+    node->as.invoke.name = name;
+    node->as.invoke.args = args;
+    node->as.invoke.argCount = argCount;
+    return node;
 }
 
 /* Finishes parsing a call chain starting from an already-parsed callee node */
@@ -250,13 +299,30 @@ static AstNode* finishCall(Parser* p, AstNode* callee) {
     return node;
 }
 
-/* Parses call expressions by wrapping primaries with zero or more calls */
+/* Parses call, property access, and method invoke expressions */
 static AstNode* call(Parser* p) {
     AstNode* expr = primary(p);
 
     for (;;) {
         if (parserMatch(p, TOKEN_LPAREN)) {
             expr = finishCall(p, expr);
+        } else if (parserMatch(p, TOKEN_DOT)) {
+            parserConsume(p, TOKEN_IDENTIFIER, "Expected property name after '.'.");
+            char* name = copyTokenText(p->previous);
+            if (parserMatch(p, TOKEN_LPAREN)) {
+                expr = finishInvoke(p, expr, name);
+            } else {
+                AstNode* node = (AstNode*)calloc(1, sizeof(AstNode));
+                if (!node) {
+                    free(name);
+                    return expr;
+                }
+                node->type = NODE_GET_PROPERTY;
+                node->line = p->previous.line;
+                node->as.getProperty.object = expr;
+                node->as.getProperty.name = name;
+                expr = node;
+            }
         } else {
             break;
         }
@@ -432,6 +498,19 @@ static AstNode* assignment(Parser* p) {
             node->as.assignment.value = assignment(p);
             return node;
         }
+        if (expr && expr->type == NODE_GET_PROPERTY) {
+            AstNode* node = (AstNode*)calloc(1, sizeof(AstNode));
+            if (!node) return expr;
+            node->type = NODE_SET_PROPERTY;
+            node->line = p->previous.line;
+            node->as.setProperty.object = expr->as.getProperty.object;
+            node->as.setProperty.name = expr->as.getProperty.name;
+            expr->as.getProperty.object = NULL;
+            expr->as.getProperty.name = NULL;
+            freeAst(expr);
+            node->as.setProperty.value = assignment(p);
+            return node;
+        }
         parserErrorAt(p, p->previous, "Invalid assignment target.");
     }
 
@@ -604,9 +683,58 @@ static AstNode* funcDeclaration(Parser* p) {
     return node;
 }
 
+/* Parses a class declaration with method definitions */
+static AstNode* classDeclaration(Parser* p) {
+    parserConsume(p, TOKEN_IDENTIFIER, "Expected class name.");
+    Token name = p->previous;
+
+    parserConsume(p, TOKEN_LBRACE, "Expected '{' before class body.");
+
+    AstNode** methods = NULL;
+    int methodCount = 0;
+    int methodCapacity = 0;
+
+    while (!parserCheck(p, TOKEN_RBRACE) && !parserCheck(p, TOKEN_EOF)) {
+        if (!parserMatch(p, TOKEN_FUNCTION)) {
+            parserErrorAtCurrent(p, "Expected method definition in class body.");
+            break;
+        }
+        AstNode* method = funcDeclaration(p);
+        if (!method) break;
+
+        if (methodCount >= methodCapacity) {
+            int newCap = methodCapacity < 4 ? 4 : methodCapacity * 2;
+            AstNode** newMethods = (AstNode**)realloc(methods, (size_t)newCap * sizeof(AstNode*));
+            if (!newMethods) {
+                freeAst(method);
+                break;
+            }
+            methods = newMethods;
+            methodCapacity = newCap;
+        }
+        methods[methodCount++] = method;
+    }
+
+    parserConsume(p, TOKEN_RBRACE, "Expected '}' after class body.");
+
+    AstNode* node = (AstNode*)calloc(1, sizeof(AstNode));
+    if (!node) {
+        for (int i = 0; i < methodCount; i++) freeAst(methods[i]);
+        free(methods);
+        return NULL;
+    }
+    node->type = NODE_CLASS_DECL;
+    node->line = name.line;
+    node->as.classDecl.name = copyTokenText(name);
+    node->as.classDecl.methods = methods;
+    node->as.classDecl.methodCount = methodCount;
+    return node;
+}
+
 /* Parses a top-level declaration or statement */
 static AstNode* declaration(Parser* p) {
     if (parserMatch(p, TOKEN_LET)) return varDeclaration(p);
+    if (parserMatch(p, TOKEN_CLASS)) return classDeclaration(p);
     if (parserMatch(p, TOKEN_FUNCTION)) return funcDeclaration(p);
     return statement(p);
 }

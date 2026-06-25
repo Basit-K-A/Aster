@@ -20,6 +20,8 @@ static const Keyword keywords[] = {
     {"function", 8, TOKEN_FUNCTION},
     {"return",   6, TOKEN_RETURN},
     {"print",    5, TOKEN_PRINT},
+    {"class",    5, TOKEN_CLASS},
+    {"this",     4, TOKEN_THIS},
     {"true",     4, TOKEN_TRUE},
     {"false",    5, TOKEN_FALSE},
     {"null",     4, TOKEN_NULL},
@@ -211,6 +213,8 @@ static const char* tokenTypeName(TokenType type) {
         case TOKEN_FUNCTION:    return "FUNCTION";
         case TOKEN_RETURN:      return "RETURN";
         case TOKEN_PRINT:       return "PRINT";
+        case TOKEN_CLASS:       return "CLASS";
+        case TOKEN_THIS:        return "THIS";
         case TOKEN_TRUE:        return "TRUE";
         case TOKEN_FALSE:       return "FALSE";
         case TOKEN_NULL:        return "NULL";

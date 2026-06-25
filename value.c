@@ -53,6 +53,22 @@ Value valueClosure(AsterClosure* closure) {
     return v;
 }
 
+/* Returns a class runtime value without taking ownership of the struct */
+Value valueClass(AsterClass* klass) {
+    Value v;
+    v.type = VAL_CLASS;
+    v.as.klass = klass;
+    return v;
+}
+
+/* Returns an instance runtime value without taking ownership of the struct */
+Value valueInstance(AsterInstance* instance) {
+    Value v;
+    v.type = VAL_INSTANCE;
+    v.as.instance = instance;
+    return v;
+}
+
 /* Deep-copies heap-owned parts of a value for independent storage */
 Value valueCopy(Value v) {
     if (v.type == VAL_STRING && v.as.string) {
@@ -76,6 +92,10 @@ void valueRelease(Value v) {
         functionFree(v.as.function);
     } else if (v.type == VAL_CLOSURE) {
         closureFree(v.as.closure);
+    } else if (v.type == VAL_CLASS) {
+        classFree(v.as.klass);
+    } else if (v.type == VAL_INSTANCE) {
+        instanceFree(v.as.instance);
     }
 }
 
@@ -101,6 +121,31 @@ void closureFree(AsterClosure* closure) {
     free(closure);
 }
 
+/* Frees a class and its method name strings (not method functions) */
+void classFree(AsterClass* klass) {
+    if (!klass) return;
+    free(klass->name);
+    for (int i = 0; i < klass->methodCount; i++) {
+        free(klass->methodNames[i]);
+        functionFree(klass->methods[i]);
+    }
+    free(klass->methodNames);
+    free(klass->methods);
+    free(klass);
+}
+
+/* Frees an instance and its field values */
+void instanceFree(AsterInstance* instance) {
+    if (!instance) return;
+    for (int i = 0; i < instance->fieldCount; i++) {
+        free(instance->fieldKeys[i]);
+        valueRelease(instance->fieldVals[i]);
+    }
+    free(instance->fieldKeys);
+    free(instance->fieldVals);
+    free(instance);
+}
+
 /* Converts a number to a newly allocated string */
 static char* numberToString(double n) {
     char buffer[64];
@@ -120,6 +165,11 @@ static char* valueToString(Value v) {
         case VAL_CLOSURE:
             return strdup(v.as.closure && v.as.closure->function && v.as.closure->function->name
                 ? v.as.closure->function->name : "<closure>");
+        case VAL_CLASS:
+            return strdup(v.as.klass && v.as.klass->name ? v.as.klass->name : "<class>");
+        case VAL_INSTANCE:
+            return strdup(v.as.instance && v.as.instance->klass && v.as.instance->klass->name
+                ? v.as.instance->klass->name : "<instance>");
     }
     return strdup("");
 }
@@ -170,6 +220,14 @@ void printValue(Value v) {
                 v.as.closure && v.as.closure->function && v.as.closure->function->name
                     ? v.as.closure->function->name : "");
             break;
+        case VAL_CLASS:
+            printf("<class %s>\n", v.as.klass && v.as.klass->name ? v.as.klass->name : "");
+            break;
+        case VAL_INSTANCE:
+            printf("<instance %s>\n",
+                v.as.instance && v.as.instance->klass && v.as.instance->klass->name
+                    ? v.as.instance->klass->name : "");
+            break;
     }
 }
 
@@ -186,6 +244,8 @@ bool valuesEqual(Value a, Value b) {
             return strcmp(a.as.string, b.as.string) == 0;
         case VAL_FUNCTION: return a.as.function == b.as.function;
         case VAL_CLOSURE:  return a.as.closure == b.as.closure;
+        case VAL_CLASS:    return a.as.klass == b.as.klass;
+        case VAL_INSTANCE: return a.as.instance == b.as.instance;
     }
     return false;
 }
@@ -199,6 +259,8 @@ bool isTruthy(Value v) {
         case VAL_STRING:   return v.as.string != NULL && v.as.string[0] != '\0';
         case VAL_FUNCTION: return true;
         case VAL_CLOSURE:  return true;
+        case VAL_CLASS:    return true;
+        case VAL_INSTANCE: return true;
     }
     return false;
 }

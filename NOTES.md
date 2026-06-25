@@ -190,3 +190,25 @@ gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o 
 
 ### Next phase (Phase 8 — Classes)
 - Class declarations, methods, and `this`
+
+## Phase 8 — Classes & Instances (Complete)
+
+### What was built
+- `AsterClass` with method table (`name` → `AsterFunction*`)
+- `AsterInstance` with per-object field map
+- `TOKEN_CLASS`, `TOKEN_THIS` keywords; property access (`obj.field`) and method invoke (`obj.method()`)
+- New opcodes: `OP_CLASS`, `OP_GET_PROPERTY`, `OP_SET_PROPERTY`, `OP_METHOD`, `OP_INVOKE`
+- Methods receive `this` as local slot 0; classes are callable to create instances
+
+### Phase 8 test result
+- `Dog` class with `bark()`, instance field `name = "Rex"`, `print(d.name)` → `Rex`, `d.bark()` → `Woof!`
+
+### Regression
+- All Phase 3/5/6/7 VM tests still pass (A–F)
+
+### Known limitations
+- No inheritance or `super`
+- Tree-walk interpreter does not support classes yet
+
+### Next phase (Phase 9 — Garbage Collector)
+- Mark & sweep GC with intrusive object list

@@ -9,11 +9,14 @@ struct Chunk;
 
 /* Runtime value type enumeration */
 typedef enum {
-    VAL_NUMBER, VAL_STRING, VAL_BOOL, VAL_NULL, VAL_FUNCTION, VAL_CLOSURE
+    VAL_NUMBER, VAL_STRING, VAL_BOOL, VAL_NULL,
+    VAL_FUNCTION, VAL_CLOSURE, VAL_CLASS, VAL_INSTANCE
 } ValueType;
 
 typedef struct AsterFunction AsterFunction;
 typedef struct AsterClosure AsterClosure;
+typedef struct AsterClass AsterClass;
+typedef struct AsterInstance AsterInstance;
 typedef struct Upvalue Upvalue;
 
 /* Compiled user-defined function object */
@@ -34,6 +37,14 @@ struct AsterClosure {
     int upvalueCount;
 };
 
+/* Class object with a method table */
+struct AsterClass {
+    char* name;
+    char** methodNames;
+    AsterFunction** methods;
+    int methodCount;
+};
+
 /* A dynamically-typed runtime value */
 typedef struct {
     ValueType type;
@@ -43,8 +54,18 @@ typedef struct {
         bool boolean;
         AsterFunction* function;
         AsterClosure* closure;
+        AsterClass* klass;
+        AsterInstance* instance;
     } as;
 } Value;
+
+/* Instance object with per-object fields */
+struct AsterInstance {
+    AsterClass* klass;
+    char** fieldKeys;
+    Value* fieldVals;
+    int fieldCount;
+};
 
 /* An open or closed captured variable slot */
 struct Upvalue {
@@ -71,6 +92,12 @@ Value valueFunction(AsterFunction* fn);
 /* Returns a closure runtime value without taking ownership of the struct */
 Value valueClosure(AsterClosure* closure);
 
+/* Returns a class runtime value without taking ownership of the struct */
+Value valueClass(AsterClass* klass);
+
+/* Returns an instance runtime value without taking ownership of the struct */
+Value valueInstance(AsterInstance* instance);
+
 /* Deep-copies heap-owned parts of a value for independent storage */
 Value valueCopy(Value v);
 
@@ -85,6 +112,12 @@ void functionFree(AsterFunction* fn);
 
 /* Frees a closure without freeing its underlying function */
 void closureFree(AsterClosure* closure);
+
+/* Frees a class and its method name strings (not method functions) */
+void classFree(AsterClass* klass);
+
+/* Frees an instance and its field values */
+void instanceFree(AsterInstance* instance);
 
 /* Builds an AsterFunction object from a function declaration AST node */
 AsterFunction* functionFromNode(AstNode* node);

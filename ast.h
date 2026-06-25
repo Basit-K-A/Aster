@@ -14,7 +14,12 @@ typedef enum {
     NODE_IF,
     NODE_WHILE,
     NODE_FUNCTION_DECL,
+    NODE_CLASS_DECL,
     NODE_CALL,
+    NODE_GET_PROPERTY,
+    NODE_SET_PROPERTY,
+    NODE_INVOKE,
+    NODE_THIS,
     NODE_RETURN,
     NODE_PRINT,
 } NodeType;
@@ -84,6 +89,26 @@ struct AstNode {
             AstNode** args;
             int argCount;
         } call;
+        struct {
+            char* name;
+            AstNode** methods;
+            int methodCount;
+        } classDecl;
+        struct {
+            AstNode* object;
+            char* name;
+        } getProperty;
+        struct {
+            AstNode* object;
+            char* name;
+            AstNode* value;
+        } setProperty;
+        struct {
+            AstNode* receiver;
+            char* name;
+            AstNode** args;
+            int argCount;
+        } invoke;
         struct {
             AstNode* value;
         } returnStmt;

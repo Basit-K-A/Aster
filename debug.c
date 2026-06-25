@@ -41,6 +41,11 @@ static const char* opcodeName(OpCode op) {
         case OP_GET_UPVALUE:    return "OP_GET_UPVALUE";
         case OP_SET_UPVALUE:    return "OP_SET_UPVALUE";
         case OP_CLOSE_UPVALUE:  return "OP_CLOSE_UPVALUE";
+        case OP_CLASS:          return "OP_CLASS";
+        case OP_GET_PROPERTY:   return "OP_GET_PROPERTY";
+        case OP_SET_PROPERTY:   return "OP_SET_PROPERTY";
+        case OP_METHOD:         return "OP_METHOD";
+        case OP_INVOKE:         return "OP_INVOKE";
         case OP_HALT:           return "OP_HALT";
     }
     return "OP_UNKNOWN";
@@ -67,6 +72,12 @@ static void printConstant(Chunk* chunk, int index) {
             break;
         case VAL_CLOSURE:
             printf("<closure>");
+            break;
+        case VAL_CLASS:
+            printf("<class>");
+            break;
+        case VAL_INSTANCE:
+            printf("<instance>");
             break;
     }
 }
@@ -149,10 +160,25 @@ static int disassembleInstruction(Chunk* chunk, int offset) {
             break;
         }
         case OP_GET_UPVALUE:
-        case OP_SET_UPVALUE: {
+        case OP_SET_UPVALUE:
+        case OP_CLASS:
+        case OP_GET_PROPERTY:
+        case OP_SET_PROPERTY:
+        case OP_METHOD: {
             uint8_t slot = chunk->code[offset + 1];
-            printf("%3d", slot);
+            printf("%3d '", slot);
+            printConstant(chunk, slot);
+            printf("'");
             next = offset + 2;
+            break;
+        }
+        case OP_INVOKE: {
+            uint8_t name = chunk->code[offset + 1];
+            uint8_t argc = chunk->code[offset + 2];
+            printf("%3d '", name);
+            printConstant(chunk, name);
+            printf("' (%d args)", argc);
+            next = offset + 3;
             break;
         }
         default:

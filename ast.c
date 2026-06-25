@@ -44,7 +44,12 @@ static const char* nodeTypeName(NodeType type) {
         case NODE_IF:             return "If";
         case NODE_WHILE:          return "While";
         case NODE_FUNCTION_DECL:  return "FunctionDecl";
+        case NODE_CLASS_DECL:     return "ClassDecl";
         case NODE_CALL:           return "Call";
+        case NODE_GET_PROPERTY:   return "GetProperty";
+        case NODE_SET_PROPERTY:   return "SetProperty";
+        case NODE_INVOKE:         return "Invoke";
+        case NODE_THIS:           return "This";
         case NODE_RETURN:         return "Return";
         case NODE_PRINT:          return "Print";
     }
@@ -124,12 +129,37 @@ void printAst(AstNode* node, int indent) {
             printf(")\n");
             printAst(node->as.funcDecl.body, indent + 1);
             break;
+        case NODE_CLASS_DECL:
+            printf("%s %s\n", nodeTypeName(node->type), node->as.classDecl.name ? node->as.classDecl.name : "");
+            for (int i = 0; i < node->as.classDecl.methodCount; i++) {
+                printAst(node->as.classDecl.methods[i], indent + 1);
+            }
+            break;
         case NODE_CALL:
             printf("%s\n", nodeTypeName(node->type));
             printAst(node->as.call.callee, indent + 1);
             for (int i = 0; i < node->as.call.argCount; i++) {
                 printAst(node->as.call.args[i], indent + 1);
             }
+            break;
+        case NODE_GET_PROPERTY:
+            printf("%s %s\n", nodeTypeName(node->type), node->as.getProperty.name ? node->as.getProperty.name : "");
+            printAst(node->as.getProperty.object, indent + 1);
+            break;
+        case NODE_SET_PROPERTY:
+            printf("%s %s\n", nodeTypeName(node->type), node->as.setProperty.name ? node->as.setProperty.name : "");
+            printAst(node->as.setProperty.object, indent + 1);
+            printAst(node->as.setProperty.value, indent + 1);
+            break;
+        case NODE_INVOKE:
+            printf("%s %s\n", nodeTypeName(node->type), node->as.invoke.name ? node->as.invoke.name : "");
+            printAst(node->as.invoke.receiver, indent + 1);
+            for (int i = 0; i < node->as.invoke.argCount; i++) {
+                printAst(node->as.invoke.args[i], indent + 1);
+            }
+            break;
+        case NODE_THIS:
+            printf("%s\n", nodeTypeName(node->type));
             break;
         case NODE_RETURN:
             printf("%s\n", nodeTypeName(node->type));
@@ -191,12 +221,36 @@ void freeAst(AstNode* node) {
             free(node->as.funcDecl.params);
             freeAst(node->as.funcDecl.body);
             break;
+        case NODE_CLASS_DECL:
+            free(node->as.classDecl.name);
+            for (int i = 0; i < node->as.classDecl.methodCount; i++) {
+                freeAst(node->as.classDecl.methods[i]);
+            }
+            free(node->as.classDecl.methods);
+            break;
         case NODE_CALL:
             freeAst(node->as.call.callee);
             for (int i = 0; i < node->as.call.argCount; i++) {
                 freeAst(node->as.call.args[i]);
             }
             free(node->as.call.args);
+            break;
+        case NODE_GET_PROPERTY:
+            freeAst(node->as.getProperty.object);
+            free(node->as.getProperty.name);
+            break;
+        case NODE_SET_PROPERTY:
+            freeAst(node->as.setProperty.object);
+            free(node->as.setProperty.name);
+            freeAst(node->as.setProperty.value);
+            break;
+        case NODE_INVOKE:
+            freeAst(node->as.invoke.receiver);
+            free(node->as.invoke.name);
+            for (int i = 0; i < node->as.invoke.argCount; i++) {
+                freeAst(node->as.invoke.args[i]);
+            }
+            free(node->as.invoke.args);
             break;
         case NODE_RETURN:
             freeAst(node->as.returnStmt.value);

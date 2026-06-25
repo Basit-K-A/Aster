@@ -9,6 +9,8 @@
 #include "compiler.h"
 #include "parser.h"
 
+static bool callClosure(VM* vm, AsterClosure* closure, int argCount);
+
 /* Pushes a value onto the VM operand stack */
 static void push(VM* vm, Value value) {
     if (vm->stackTop >= vm->stack + STACK_MAX) {
@@ -124,6 +126,106 @@ static AsterClosure* closureNew(AsterFunction* function, int upvalueCount) {
     return closure;
 }
 
+/* Creates a new class object with the given name */
+static AsterClass* classNew(const char* name) {
+    AsterClass* klass = (AsterClass*)calloc(1, sizeof(AsterClass));
+    if (!klass) return NULL;
+    klass->name = strdup(name);
+    return klass;
+}
+
+/* Adds a method function to a class method table */
+static void classAddMethod(AsterClass* klass, const char* name, AsterFunction* method) {
+    int count = klass->methodCount;
+    char** names = (char**)realloc(klass->methodNames, (size_t)(count + 1) * sizeof(char*));
+    AsterFunction** methods = (AsterFunction**)realloc(klass->methods, (size_t)(count + 1) * sizeof(AsterFunction*));
+    if (!names || !methods) {
+        free(names);
+        free(methods);
+        return;
+    }
+    klass->methodNames = names;
+    klass->methods = methods;
+    klass->methodNames[count] = strdup(name);
+    klass->methods[count] = method;
+    klass->methodCount++;
+}
+
+/* Looks up a method on a class by name */
+static AsterFunction* classGetMethod(AsterClass* klass, const char* name) {
+    for (int i = 0; i < klass->methodCount; i++) {
+        if (strcmp(klass->methodNames[i], name) == 0) {
+            return klass->methods[i];
+        }
+    }
+    return NULL;
+}
+
+/* Creates a new instance of the given class */
+static AsterInstance* instanceNew(AsterClass* klass) {
+    AsterInstance* instance = (AsterInstance*)calloc(1, sizeof(AsterInstance));
+    if (!instance) return NULL;
+    instance->klass = klass;
+    return instance;
+}
+
+/* Reads a field value from an instance */
+static bool instanceGetField(AsterInstance* instance, const char* name, Value* out) {
+    for (int i = 0; i < instance->fieldCount; i++) {
+        if (strcmp(instance->fieldKeys[i], name) == 0) {
+            *out = valueCopy(instance->fieldVals[i]);
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Assigns a field value on an instance, creating the field if needed */
+static bool instanceSetField(AsterInstance* instance, const char* name, Value value) {
+    for (int i = 0; i < instance->fieldCount; i++) {
+        if (strcmp(instance->fieldKeys[i], name) == 0) {
+            valueRelease(instance->fieldVals[i]);
+            instance->fieldVals[i] = valueCopy(value);
+            return true;
+        }
+    }
+
+    if (instance->fieldCount >= 256) return false;
+
+    int count = instance->fieldCount;
+    char** keys = (char**)realloc(instance->fieldKeys, (size_t)(count + 1) * sizeof(char*));
+    Value* vals = (Value*)realloc(instance->fieldVals, (size_t)(count + 1) * sizeof(Value));
+    if (!keys || !vals) {
+        free(keys);
+        free(vals);
+        return false;
+    }
+    instance->fieldKeys = keys;
+    instance->fieldVals = vals;
+    instance->fieldKeys[count] = strdup(name);
+    instance->fieldVals[count] = valueCopy(value);
+    instance->fieldCount++;
+    return true;
+}
+
+/* Invokes a method on an instance with arguments already on the stack */
+static bool invokeMethod(VM* vm, AsterInstance* instance, const char* name, int argCount) {
+    AsterFunction* method = classGetMethod(instance->klass, name);
+    if (!method) {
+        runtimeError(vm, "Undefined property.");
+        return false;
+    }
+
+    AsterClosure* closure = closureNew(method, method->upvalueCount);
+    if (!closure) {
+        runtimeError(vm, "Out of memory.");
+        return false;
+    }
+
+    push(vm, valueClosure(closure));
+    return callClosure(vm, closure, argCount);
+}
+
 /* Defines a new global variable in the VM */
 static bool globalDefine(VM* vm, const char* name, Value value) {
     if (vm->globalCount >= 256) {
@@ -150,6 +252,10 @@ static void globalReleaseValue(Value value) {
         functionFree(value.as.function);
     } else if (value.type == VAL_CLOSURE) {
         closureFree(value.as.closure);
+    } else if (value.type == VAL_CLASS) {
+        classFree(value.as.klass);
+    } else if (value.type == VAL_INSTANCE) {
+        instanceFree(value.as.instance);
     } else {
         valueFree(value);
     }
@@ -489,7 +595,15 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             case OP_CALL: {
                 uint8_t argCount = readByte(frame);
                 Value callee = peek(vm, 0);
-                if (callee.type == VAL_CLOSURE) {
+                if (callee.type == VAL_CLASS) {
+                    pop(vm);
+                    AsterInstance* instance = instanceNew(callee.as.klass);
+                    if (!instance) {
+                        runtimeError(vm, "Out of memory.");
+                        return INTERPRET_RUNTIME_ERROR;
+                    }
+                    push(vm, valueInstance(instance));
+                } else if (callee.type == VAL_CLOSURE) {
                     if (!callClosure(vm, callee.as.closure, argCount)) {
                         return INTERPRET_RUNTIME_ERROR;
                     }
@@ -497,7 +611,97 @@ InterpretResult run(VM* vm, Chunk* chunk) {
                     runtimeError(vm, "Functions must be wrapped in a closure before calling.");
                     return INTERPRET_RUNTIME_ERROR;
                 } else {
-                    runtimeError(vm, "Can only call functions.");
+                    runtimeError(vm, "Can only call functions and classes.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                frame = &vm->frames[vm->frameCount - 1];
+                break;
+            }
+            case OP_CLASS: {
+                uint8_t nameIndex = readByte(frame);
+                const char* name = frame->chunk->constants[nameIndex].as.string;
+                AsterClass* klass = classNew(name);
+                if (!klass) {
+                    runtimeError(vm, "Out of memory.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                push(vm, valueClass(klass));
+                break;
+            }
+            case OP_METHOD: {
+                uint8_t nameIndex = readByte(frame);
+                const char* name = frame->chunk->constants[nameIndex].as.string;
+                Value method = pop(vm);
+                if (method.type != VAL_CLOSURE) {
+                    runtimeError(vm, "Expected method closure.");
+                    valueRelease(method);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value classValue = peek(vm, 0);
+                if (classValue.type != VAL_CLASS) {
+                    runtimeError(vm, "Expected class.");
+                    valueRelease(method);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                classAddMethod(classValue.as.klass, name, method.as.closure->function);
+                closureFree(method.as.closure);
+                break;
+            }
+            case OP_GET_PROPERTY: {
+                uint8_t nameIndex = readByte(frame);
+                const char* name = frame->chunk->constants[nameIndex].as.string;
+                Value receiver = pop(vm);
+                if (receiver.type != VAL_INSTANCE) {
+                    runtimeError(vm, "Only instances have properties.");
+                    valueFree(receiver);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value field;
+                if (instanceGetField(receiver.as.instance, name, &field)) {
+                    valueFree(receiver);
+                    push(vm, field);
+                    break;
+                }
+                if (classGetMethod(receiver.as.instance->klass, name)) {
+                    runtimeError(vm, "Use method invocation for methods.");
+                    valueFree(receiver);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                runtimeError(vm, "Undefined property.");
+                valueFree(receiver);
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            case OP_SET_PROPERTY: {
+                uint8_t nameIndex = readByte(frame);
+                const char* name = frame->chunk->constants[nameIndex].as.string;
+                Value receiver = pop(vm);
+                Value value = pop(vm);
+                if (receiver.type != VAL_INSTANCE) {
+                    runtimeError(vm, "Only instances have properties.");
+                    valueFree(receiver);
+                    valueFree(value);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!instanceSetField(receiver.as.instance, name, value)) {
+                    runtimeError(vm, "Too many fields on instance.");
+                    valueFree(receiver);
+                    valueFree(value);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                valueFree(receiver);
+                push(vm, value);
+                break;
+            }
+            case OP_INVOKE: {
+                uint8_t nameIndex = readByte(frame);
+                uint8_t argCount = readByte(frame);
+                const char* name = frame->chunk->constants[nameIndex].as.string;
+                Value receiver = peek(vm, argCount);
+                if (receiver.type != VAL_INSTANCE) {
+                    runtimeError(vm, "Only instances have methods.");
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                if (!invokeMethod(vm, receiver.as.instance, name, argCount)) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 frame = &vm->frames[vm->frameCount - 1];

@@ -30,6 +30,7 @@ typedef struct CompilerState {
     UpvalueDesc upvalues[MAX_LOCALS];
     int upvalueCount;
     struct CompilerState* enclosing;
+    bool inClass;
 } CompilerState;
 
 /* Reports a compile error at the given source line */
@@ -182,6 +183,8 @@ static int resolveUpvalue(CompilerState* c, const char* name, int line) {
 static void compileExpression(AstNode* node, CompilerState* c);
 static void compileStatement(AstNode* node, CompilerState* c);
 static void compileFunctionDecl(AstNode* node, CompilerState* c);
+static void compileMethod(AstNode* node, CompilerState* c);
+static void compileClassDecl(AstNode* node, CompilerState* c);
 
 /* Compiles a binary AST node to stack-based arithmetic/logic opcodes */
 static void compileBinary(AstNode* node, CompilerState* c) {
@@ -243,6 +246,15 @@ static void compileExpression(AstNode* node, CompilerState* c) {
         case NODE_NULL:
             emitByte(c, OP_NULL, node->line);
             break;
+        case NODE_THIS: {
+            int local = resolveLocal(c, "this");
+            if (local != -1) {
+                emitBytes(c, OP_GET_LOCAL, (uint8_t)local, node->line);
+            } else {
+                compileError(c, node->line, "Can't use 'this' outside of a method.");
+            }
+            break;
+        }
         case NODE_IDENTIFIER: {
             int local = resolveLocal(c, node->as.name);
             if (local != -1) {
@@ -288,6 +300,30 @@ static void compileExpression(AstNode* node, CompilerState* c) {
             compileExpression(node->as.call.callee, c);
             emitBytes(c, OP_CALL, (uint8_t)node->as.call.argCount, node->line);
             break;
+        case NODE_GET_PROPERTY: {
+            compileExpression(node->as.getProperty.object, c);
+            int name = identifierConstant(c, node->as.getProperty.name, node->line);
+            emitBytes(c, OP_GET_PROPERTY, (uint8_t)name, node->line);
+            break;
+        }
+        case NODE_SET_PROPERTY: {
+            compileExpression(node->as.setProperty.value, c);
+            compileExpression(node->as.setProperty.object, c);
+            int name = identifierConstant(c, node->as.setProperty.name, node->line);
+            emitBytes(c, OP_SET_PROPERTY, (uint8_t)name, node->line);
+            break;
+        }
+        case NODE_INVOKE: {
+            for (int i = 0; i < node->as.invoke.argCount; i++) {
+                compileExpression(node->as.invoke.args[i], c);
+            }
+            compileExpression(node->as.invoke.receiver, c);
+            int name = identifierConstant(c, node->as.invoke.name, node->line);
+            emitByte(c, OP_INVOKE, node->line);
+            emitByte(c, (uint8_t)name, node->line);
+            emitByte(c, (uint8_t)node->as.invoke.argCount, node->line);
+            break;
+        }
         default:
             compileError(c, node->line, "Invalid expression in compiler.");
             break;
@@ -324,8 +360,8 @@ static void emitClosure(CompilerState* c, AsterFunction* fn, CompilerState* fnCo
     }
 }
 
-/* Compiles a function declaration into a closure stored locally or globally */
-static void compileFunctionDecl(AstNode* node, CompilerState* c) {
+/* Compiles a class method and attaches it to the class on the stack */
+static void compileMethod(AstNode* node, CompilerState* c) {
     Chunk fnChunk;
     initChunk(&fnChunk);
 
@@ -336,6 +372,101 @@ static void compileFunctionDecl(AstNode* node, CompilerState* c) {
     fn.scopeDepth = 0;
     fn.upvalueCount = 0;
     fn.enclosing = c;
+    fn.inClass = true;
+
+    beginScope(&fn);
+    addLocal(&fn, "this", node->line);
+    for (int i = 0; i < node->as.funcDecl.paramCount; i++) {
+        addLocal(&fn, node->as.funcDecl.params[i], node->line);
+    }
+    compileBlock(node->as.funcDecl.body, &fn, false);
+    emitByte(&fn, OP_NULL, node->line);
+    emitByte(&fn, OP_RETURN, node->line);
+    endScope(&fn, node->line);
+
+    if (fn.hadError) {
+        freeChunk(&fnChunk);
+        compileError(c, node->line, "Could not compile method body.");
+        return;
+    }
+
+    AsterFunction* fnObj = (AsterFunction*)calloc(1, sizeof(AsterFunction));
+    if (!fnObj) {
+        freeChunk(&fnChunk);
+        compileError(c, node->line, "Out of memory.");
+        return;
+    }
+
+    fnObj->name = strdup(node->as.funcDecl.name);
+    fnObj->arity = node->as.funcDecl.paramCount;
+    fnObj->upvalueCount = fn.upvalueCount;
+    fnObj->body = node->as.funcDecl.body;
+    fnObj->chunk = (struct Chunk*)malloc(sizeof(Chunk));
+    if (!fnObj->chunk) {
+        functionFree(fnObj);
+        freeChunk(&fnChunk);
+        compileError(c, node->line, "Out of memory.");
+        return;
+    }
+    *fnObj->chunk = fnChunk;
+    fnObj->hasBytecode = true;
+
+    if (fnObj->arity > 0) {
+        fnObj->params = (char**)calloc((size_t)fnObj->arity, sizeof(char*));
+        if (!fnObj->params) {
+            functionFree(fnObj);
+            compileError(c, node->line, "Out of memory.");
+            return;
+        }
+        for (int i = 0; i < fnObj->arity; i++) {
+            fnObj->params[i] = strdup(node->as.funcDecl.params[i]);
+        }
+    }
+
+    emitClosure(c, fnObj, &fn, node->line);
+
+    int methodName = identifierConstant(c, node->as.funcDecl.name, node->line);
+    emitBytes(c, OP_METHOD, (uint8_t)methodName, node->line);
+}
+
+/* Compiles a class declaration and stores it in a global binding */
+static void compileClassDecl(AstNode* node, CompilerState* c) {
+    int nameConstant = identifierConstant(c, node->as.classDecl.name, node->line);
+    emitBytes(c, OP_CLASS, (uint8_t)nameConstant, node->line);
+
+    bool wasInClass = c->inClass;
+    c->inClass = true;
+    for (int i = 0; i < node->as.classDecl.methodCount; i++) {
+        compileMethod(node->as.classDecl.methods[i], c);
+        if (c->hadError) break;
+    }
+    c->inClass = wasInClass;
+
+    if (c->scopeDepth == 0) {
+        emitBytes(c, OP_DEF_GLOBAL, (uint8_t)nameConstant, node->line);
+    } else {
+        addLocal(c, node->as.classDecl.name, node->line);
+        emitBytes(c, OP_DEF_LOCAL, (uint8_t)(c->localCount - 1), node->line);
+    }
+}
+
+/* Compiles a function declaration into a closure stored locally or globally */
+static void compileFunctionDecl(AstNode* node, CompilerState* c) {
+    if (c->inClass) {
+        compileError(c, node->line, "Use class body for method declarations.");
+        return;
+    }
+    Chunk fnChunk;
+    initChunk(&fnChunk);
+
+    CompilerState fn;
+    fn.chunk = &fnChunk;
+    fn.hadError = false;
+    fn.localCount = 0;
+    fn.scopeDepth = 0;
+    fn.upvalueCount = 0;
+    fn.enclosing = c;
+    fn.inClass = false;
 
     beginScope(&fn);
     for (int i = 0; i < node->as.funcDecl.paramCount; i++) {
@@ -414,6 +545,9 @@ static void compileStatement(AstNode* node, CompilerState* c) {
         case NODE_FUNCTION_DECL:
             compileFunctionDecl(node, c);
             break;
+        case NODE_CLASS_DECL:
+            compileClassDecl(node, c);
+            break;
         case NODE_PRINT:
             compileExpression(node->as.printStmt.value, c);
             emitByte(c, OP_PRINT, node->line);
@@ -477,6 +611,7 @@ void compile(AstNode* node, Compiler* compiler) {
     state.scopeDepth = 0;
     state.upvalueCount = 0;
     state.enclosing = NULL;
+    state.inClass = false;
 
     if (node && node->type == NODE_BLOCK) {
         compileProgram(node, &state);
