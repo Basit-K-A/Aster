@@ -1,25 +1,32 @@
-/* Aster Language — entry point and Phase 8 class tests */
+/* Aster Language — entry point and Phase 9 garbage collector tests */
 
 #include <stdio.h>
 
 #include "vm.h"
 
 int main(void) {
-    printf("=== Phase 8 Classes & Instances ===\n\n");
+    printf("=== Phase 9 Garbage Collector ===\n\n");
 
-    bool ok = runSourceVM(
-        "class Dog {\n"
-        "  function bark() { print(\"Woof!\"); }\n"
+    size_t bytesAfter = 0;
+    bool ok = runSourceVMEx(
+        "let i = 0;\n"
+        "while (i < 5000) {\n"
+        "  let s = \"garbage \" + i;\n"
+        "  i = i + 1;\n"
         "}\n"
-        "let d = Dog();\n"
-        "d.name = \"Rex\";\n"
-        "print(d.name);\n"
-        "d.bark();\n",
-        "Phase 8 Test");
+        "print(\"done\");\n",
+        "Phase 9 Test",
+        &bytesAfter);
 
     if (!ok) return 1;
 
-    printf("=== Phase 3/5/6/7 regression (VM) ===\n\n");
+    printf("bytesAfter = %zu\n", bytesAfter);
+    if (bytesAfter >= 512 * 1024) {
+        fprintf(stderr, "Heap too large after GC test: %zu bytes\n", bytesAfter);
+        return 1;
+    }
+
+    printf("\n=== Phase 3/5/6/7/8 regression (VM) ===\n\n");
 
     ok = runSourceVM(
         "let x = 10;\n"
@@ -61,8 +68,18 @@ int main(void) {
         "print(c());\n",
         "Test F (closures)") && ok;
 
+    ok = runSourceVM(
+        "class Dog {\n"
+        "  function bark() { print(\"Woof!\"); }\n"
+        "}\n"
+        "let d = Dog();\n"
+        "d.name = \"Rex\";\n"
+        "print(d.name);\n"
+        "d.bark();\n",
+        "Test G (classes)") && ok;
+
     if (!ok) return 1;
 
-    printf("=== Phase 8 complete. Run tests before continuing. ===\n");
+    printf("=== Phase 9 complete. Run tests before continuing. ===\n");
     return 0;
 }

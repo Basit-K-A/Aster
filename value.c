@@ -1,14 +1,25 @@
 #include "value.h"
 
 #include "chunk.h"
+#include "object.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* Returns the C string payload for a string value */
+const char* valueStringChars(Value v) {
+    if (v.type != VAL_STRING) return "";
+    if (v.isGcString) {
+        return v.as.stringObj && v.as.stringObj->chars ? v.as.stringObj->chars : "";
+    }
+    return v.as.string ? v.as.string : "";
+}
+
 /* Returns a null runtime value */
 Value valueNull(void) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_NULL;
     return v;
 }
@@ -16,6 +27,7 @@ Value valueNull(void) {
 /* Returns a numeric runtime value */
 Value valueNumber(double n) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_NUMBER;
     v.as.number = n;
     return v;
@@ -24,22 +36,36 @@ Value valueNumber(double n) {
 /* Returns a boolean runtime value */
 Value valueBool(bool b) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_BOOL;
     v.as.boolean = b;
     return v;
 }
 
-/* Returns a heap-owned string runtime value */
+/* Returns a compile-time heap-owned string runtime value */
 Value valueStringOwned(char* s) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_STRING;
+    v.isGcString = false;
     v.as.string = s;
+    return v;
+}
+
+/* Returns a GC-managed string runtime value */
+Value valueStringObj(ObjString* string) {
+    Value v;
+    memset(&v, 0, sizeof(Value));
+    v.type = VAL_STRING;
+    v.isGcString = true;
+    v.as.stringObj = string;
     return v;
 }
 
 /* Returns a function runtime value without taking ownership of the struct */
 Value valueFunction(AsterFunction* fn) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_FUNCTION;
     v.as.function = fn;
     return v;
@@ -48,6 +74,7 @@ Value valueFunction(AsterFunction* fn) {
 /* Returns a closure runtime value without taking ownership of the struct */
 Value valueClosure(AsterClosure* closure) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_CLOSURE;
     v.as.closure = closure;
     return v;
@@ -56,6 +83,7 @@ Value valueClosure(AsterClosure* closure) {
 /* Returns a class runtime value without taking ownership of the struct */
 Value valueClass(AsterClass* klass) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_CLASS;
     v.as.klass = klass;
     return v;
@@ -64,29 +92,40 @@ Value valueClass(AsterClass* klass) {
 /* Returns an instance runtime value without taking ownership of the struct */
 Value valueInstance(AsterInstance* instance) {
     Value v;
+    memset(&v, 0, sizeof(Value));
     v.type = VAL_INSTANCE;
     v.as.instance = instance;
     return v;
 }
 
-/* Deep-copies heap-owned parts of a value for independent storage */
+/* Deep-copies compile-time string values for the constant pool */
 Value valueCopy(Value v) {
-    if (v.type == VAL_STRING && v.as.string) {
-        return valueStringOwned(strdup(v.as.string));
+    if (v.type == VAL_STRING) {
+        return valueStringOwned(strdup(valueStringChars(v)));
     }
     return v;
 }
 
-/* Frees heap-owned resources inside a runtime value (strings only) */
-void valueFree(Value v) {
+/* Deep-copies a value using the VM allocator for GC-managed strings */
+Value valueCopyVm(VM* vm, Value v) {
     if (v.type == VAL_STRING) {
+        ObjString* copied = copyString(vm, valueStringChars(v));
+        if (!copied) return valueNull();
+        return valueStringObj(copied);
+    }
+    return v;
+}
+
+/* Frees compile-time string buffers held directly by a value */
+void valueFree(Value v) {
+    if (v.type == VAL_STRING && !v.isGcString && v.as.string) {
         free(v.as.string);
     }
 }
 
-/* Frees heap-owned resources including functions and closures when releasing stored values */
+/* Releases compile-time owned resources when replacing stored values */
 void valueRelease(Value v) {
-    if (v.type == VAL_STRING) {
+    if (v.type == VAL_STRING && !v.isGcString && v.as.string) {
         free(v.as.string);
     } else if (v.type == VAL_FUNCTION) {
         functionFree(v.as.function);
@@ -99,50 +138,86 @@ void valueRelease(Value v) {
     }
 }
 
-/* Frees a user-defined function and its owned name/param strings */
-void functionFree(AsterFunction* fn) {
+/* Frees bytecode and metadata owned by a function body */
+void functionFreeBody(AsterFunction* fn) {
     if (!fn) return;
     if (fn->hasBytecode && fn->chunk) {
         freeChunk(fn->chunk);
         free(fn->chunk);
+        fn->chunk = NULL;
     }
     free(fn->name);
-    for (int i = 0; i < fn->arity; i++) {
-        free(fn->params[i]);
+    if (fn->params) {
+        for (int i = 0; i < fn->arity; i++) {
+            free(fn->params[i]);
+        }
     }
     free(fn->params);
+    fn->name = NULL;
+    fn->params = NULL;
+}
+
+/* Frees a compile-time or interpreter-owned function object */
+void functionFree(AsterFunction* fn) {
+    if (!fn) return;
+    functionFreeBody(fn);
     free(fn);
 }
 
-/* Frees a closure without freeing its underlying function */
-void closureFree(AsterClosure* closure) {
+/* Frees closure-owned tables without freeing the closure header */
+void closureFreeShell(AsterClosure* closure) {
     if (!closure) return;
     free(closure->upvalues);
+    closure->upvalues = NULL;
+}
+
+/* Frees a compile-time or interpreter-owned closure object */
+void closureFree(AsterClosure* closure) {
+    if (!closure) return;
+    closureFreeShell(closure);
     free(closure);
 }
 
-/* Frees a class and its method name strings (not method functions) */
-void classFree(AsterClass* klass) {
+/* Frees class-owned tables without freeing the class header */
+void classFreeBody(AsterClass* klass) {
     if (!klass) return;
     free(klass->name);
     for (int i = 0; i < klass->methodCount; i++) {
         free(klass->methodNames[i]);
-        functionFree(klass->methods[i]);
     }
     free(klass->methodNames);
     free(klass->methods);
+    klass->name = NULL;
+    klass->methodNames = NULL;
+    klass->methods = NULL;
+    klass->methodCount = 0;
+}
+
+/* Frees a compile-time or interpreter-owned class object */
+void classFree(AsterClass* klass) {
+    if (!klass) return;
+    classFreeBody(klass);
     free(klass);
 }
 
-/* Frees an instance and its field values */
-void instanceFree(AsterInstance* instance) {
+/* Frees instance-owned field storage without freeing the header */
+void instanceFreeBody(AsterInstance* instance) {
     if (!instance) return;
     for (int i = 0; i < instance->fieldCount; i++) {
         free(instance->fieldKeys[i]);
-        valueRelease(instance->fieldVals[i]);
+        valueFree(instance->fieldVals[i]);
     }
     free(instance->fieldKeys);
     free(instance->fieldVals);
+    instance->fieldKeys = NULL;
+    instance->fieldVals = NULL;
+    instance->fieldCount = 0;
+}
+
+/* Frees a compile-time or interpreter-owned instance object */
+void instanceFree(AsterInstance* instance) {
+    if (!instance) return;
+    instanceFreeBody(instance);
     free(instance);
 }
 
@@ -157,7 +232,7 @@ static char* numberToString(double n) {
 static char* valueToString(Value v) {
     switch (v.type) {
         case VAL_NUMBER: return numberToString(v.as.number);
-        case VAL_STRING: return v.as.string ? strdup(v.as.string) : strdup("");
+        case VAL_STRING: return strdup(valueStringChars(v));
         case VAL_BOOL:   return strdup(v.as.boolean ? "true" : "false");
         case VAL_NULL:   return strdup("null");
         case VAL_FUNCTION:
@@ -204,7 +279,7 @@ void printValue(Value v) {
             printf("%g\n", v.as.number);
             break;
         case VAL_STRING:
-            printf("%s\n", v.as.string ? v.as.string : "");
+            printf("%s\n", valueStringChars(v));
             break;
         case VAL_BOOL:
             printf("%s\n", v.as.boolean ? "true" : "false");
@@ -239,9 +314,7 @@ bool valuesEqual(Value a, Value b) {
         case VAL_NULL:     return true;
         case VAL_BOOL:     return a.as.boolean == b.as.boolean;
         case VAL_NUMBER:   return a.as.number == b.as.number;
-        case VAL_STRING:
-            if (!a.as.string || !b.as.string) return a.as.string == b.as.string;
-            return strcmp(a.as.string, b.as.string) == 0;
+        case VAL_STRING:   return strcmp(valueStringChars(a), valueStringChars(b)) == 0;
         case VAL_FUNCTION: return a.as.function == b.as.function;
         case VAL_CLOSURE:  return a.as.closure == b.as.closure;
         case VAL_CLASS:    return a.as.klass == b.as.klass;
@@ -256,7 +329,7 @@ bool isTruthy(Value v) {
         case VAL_NULL:     return false;
         case VAL_BOOL:     return v.as.boolean;
         case VAL_NUMBER:   return v.as.number != 0.0;
-        case VAL_STRING:   return v.as.string != NULL && v.as.string[0] != '\0';
+        case VAL_STRING:   return valueStringChars(v)[0] != '\0';
         case VAL_FUNCTION: return true;
         case VAL_CLOSURE:  return true;
         case VAL_CLASS:    return true;

@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS  = -std=c17 -Wall -Wextra
 LDFLAGS = -lm
 
-SRCS = main.c lexer.c ast.c parser.c value.c env.c interpreter.c chunk.c compiler.c debug.c vm.c
+SRCS = main.c lexer.c ast.c parser.c value.c env.c interpreter.c chunk.c compiler.c debug.c object.c vm.c
 OBJS = $(SRCS:.c=.o)
 
 aster: $(OBJS)

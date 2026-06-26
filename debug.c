@@ -59,7 +59,7 @@ static void printConstant(Chunk* chunk, int index) {
             printf("%g", value.as.number);
             break;
         case VAL_STRING:
-            printf("\"%s\"", value.as.string ? value.as.string : "");
+            printf("\"%s\"", valueStringChars(value));
             break;
         case VAL_BOOL:
             printf("%s", value.as.boolean ? "true" : "false");

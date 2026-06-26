@@ -7,6 +7,7 @@
 
 #include "ast.h"
 #include "compiler.h"
+#include "object.h"
 #include "parser.h"
 
 static bool callClosure(VM* vm, AsterClosure* closure, int argCount);
@@ -60,14 +61,12 @@ static Value upvalueGet(Upvalue* upvalue) {
 }
 
 /* Assigns a value into an upvalue, whether open or closed */
-static void upvalueSet(Upvalue* upvalue, Value value) {
+static void upvalueSet(VM* vm, Upvalue* upvalue, Value value) {
     if (upvalue->location) {
         *upvalue->location = value;
     } else {
-        if (upvalue->closed.type == VAL_STRING) {
-            valueFree(upvalue->closed);
-        }
-        upvalue->closed = valueCopy(value);
+        valueFree(upvalue->closed);
+        upvalue->closed = valueCopyVm(vm, value);
     }
 }
 
@@ -85,7 +84,7 @@ static Upvalue* captureUpvalue(VM* vm, Value* local) {
         return upvalue;
     }
 
-    Upvalue* created = (Upvalue*)calloc(1, sizeof(Upvalue));
+    Upvalue* created = (Upvalue*)allocateObject(vm, sizeof(Upvalue), OBJ_UPVALUE);
     if (!created) return NULL;
     created->location = local;
     created->next = upvalue;
@@ -103,15 +102,15 @@ static Upvalue* captureUpvalue(VM* vm, Value* local) {
 static void closeUpvalues(VM* vm, Value* last) {
     while (vm->openUpvalues != NULL && vm->openUpvalues->location >= last) {
         Upvalue* upvalue = vm->openUpvalues;
-        upvalue->closed = valueCopy(*upvalue->location);
+        upvalue->closed = valueCopyVm(vm, *upvalue->location);
         upvalue->location = NULL;
         vm->openUpvalues = upvalue->next;
     }
 }
 
 /* Creates a closure from a function prototype and captured upvalues */
-static AsterClosure* closureNew(AsterFunction* function, int upvalueCount) {
-    AsterClosure* closure = (AsterClosure*)calloc(1, sizeof(AsterClosure));
+static AsterClosure* closureNew(VM* vm, AsterFunction* function, int upvalueCount) {
+    AsterClosure* closure = (AsterClosure*)allocateObject(vm, sizeof(AsterClosure), OBJ_CLOSURE);
     if (!closure) return NULL;
 
     closure->function = function;
@@ -119,7 +118,6 @@ static AsterClosure* closureNew(AsterFunction* function, int upvalueCount) {
     if (upvalueCount > 0) {
         closure->upvalues = (Upvalue**)calloc((size_t)upvalueCount, sizeof(Upvalue*));
         if (!closure->upvalues) {
-            closureFree(closure);
             return NULL;
         }
     }
@@ -127,10 +125,12 @@ static AsterClosure* closureNew(AsterFunction* function, int upvalueCount) {
 }
 
 /* Creates a new class object with the given name */
-static AsterClass* classNew(const char* name) {
-    AsterClass* klass = (AsterClass*)calloc(1, sizeof(AsterClass));
+static AsterClass* classNew(VM* vm, const char* name) {
+    AsterClass* klass = (AsterClass*)allocateObject(vm, sizeof(AsterClass), OBJ_CLASS);
     if (!klass) return NULL;
     klass->name = strdup(name);
+    if (!klass->name) return NULL;
+    vm->bytesAllocated += strlen(name) + 1;
     return klass;
 }
 
@@ -162,18 +162,18 @@ static AsterFunction* classGetMethod(AsterClass* klass, const char* name) {
 }
 
 /* Creates a new instance of the given class */
-static AsterInstance* instanceNew(AsterClass* klass) {
-    AsterInstance* instance = (AsterInstance*)calloc(1, sizeof(AsterInstance));
+static AsterInstance* instanceNew(VM* vm, AsterClass* klass) {
+    AsterInstance* instance = (AsterInstance*)allocateObject(vm, sizeof(AsterInstance), OBJ_INSTANCE);
     if (!instance) return NULL;
     instance->klass = klass;
     return instance;
 }
 
 /* Reads a field value from an instance */
-static bool instanceGetField(AsterInstance* instance, const char* name, Value* out) {
+static bool instanceGetField(VM* vm, AsterInstance* instance, const char* name, Value* out) {
     for (int i = 0; i < instance->fieldCount; i++) {
         if (strcmp(instance->fieldKeys[i], name) == 0) {
-            *out = valueCopy(instance->fieldVals[i]);
+            *out = valueCopyVm(vm, instance->fieldVals[i]);
             return true;
         }
     }
@@ -181,11 +181,11 @@ static bool instanceGetField(AsterInstance* instance, const char* name, Value* o
 }
 
 /* Assigns a field value on an instance, creating the field if needed */
-static bool instanceSetField(AsterInstance* instance, const char* name, Value value) {
+static bool instanceSetField(VM* vm, AsterInstance* instance, const char* name, Value value) {
     for (int i = 0; i < instance->fieldCount; i++) {
         if (strcmp(instance->fieldKeys[i], name) == 0) {
-            valueRelease(instance->fieldVals[i]);
-            instance->fieldVals[i] = valueCopy(value);
+            valueFree(instance->fieldVals[i]);
+            instance->fieldVals[i] = valueCopyVm(vm, value);
             return true;
         }
     }
@@ -203,7 +203,8 @@ static bool instanceSetField(AsterInstance* instance, const char* name, Value va
     instance->fieldKeys = keys;
     instance->fieldVals = vals;
     instance->fieldKeys[count] = strdup(name);
-    instance->fieldVals[count] = valueCopy(value);
+    vm->bytesAllocated += strlen(name) + 1;
+    instance->fieldVals[count] = valueCopyVm(vm, value);
     instance->fieldCount++;
     return true;
 }
@@ -216,7 +217,7 @@ static bool invokeMethod(VM* vm, AsterInstance* instance, const char* name, int 
         return false;
     }
 
-    AsterClosure* closure = closureNew(method, method->upvalueCount);
+    AsterClosure* closure = closureNew(vm, method, method->upvalueCount);
     if (!closure) {
         runtimeError(vm, "Out of memory.");
         return false;
@@ -241,24 +242,14 @@ static bool globalDefine(VM* vm, const char* name, Value value) {
     }
 
     vm->globalKeys[vm->globalCount] = strdup(name);
-    vm->globalVals[vm->globalCount] = valueCopy(value);
+    vm->globalVals[vm->globalCount] = valueCopyVm(vm, value);
     vm->globalCount++;
     return true;
 }
 
-/* Releases a stored global value without removing the binding */
+/* Releases a stored global compile-time value without freeing GC objects */
 static void globalReleaseValue(Value value) {
-    if (value.type == VAL_FUNCTION) {
-        functionFree(value.as.function);
-    } else if (value.type == VAL_CLOSURE) {
-        closureFree(value.as.closure);
-    } else if (value.type == VAL_CLASS) {
-        classFree(value.as.klass);
-    } else if (value.type == VAL_INSTANCE) {
-        instanceFree(value.as.instance);
-    } else {
-        valueFree(value);
-    }
+    valueFree(value);
 }
 
 /* Assigns a value to an existing global variable */
@@ -266,7 +257,7 @@ static bool globalSet(VM* vm, const char* name, Value value) {
     for (int i = 0; i < vm->globalCount; i++) {
         if (strcmp(vm->globalKeys[i], name) == 0) {
             globalReleaseValue(vm->globalVals[i]);
-            vm->globalVals[i] = valueCopy(value);
+            vm->globalVals[i] = valueCopyVm(vm, value);
             return true;
         }
     }
@@ -278,7 +269,7 @@ static bool globalSet(VM* vm, const char* name, Value value) {
 static bool globalGet(VM* vm, const char* name) {
     for (int i = 0; i < vm->globalCount; i++) {
         if (strcmp(vm->globalKeys[i], name) == 0) {
-            push(vm, valueCopy(vm->globalVals[i]));
+            push(vm, valueCopyVm(vm, vm->globalVals[i]));
             return true;
         }
     }
@@ -327,11 +318,17 @@ static bool binaryOp(VM* vm, BinOp op) {
             if (combined) {
                 snprintf(combined, len, "%s%s", as, bs);
             }
+            ObjString* result = copyString(vm, combined ? combined : "");
+            free(combined);
             free(as);
             free(bs);
             valueFree(a);
             valueFree(b);
-            push(vm, valueStringOwned(combined));
+            if (!result) {
+                runtimeError(vm, "Out of memory.");
+                return false;
+            }
+            push(vm, valueStringObj(result));
             return true;
         }
         if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
@@ -399,6 +396,7 @@ static bool binaryOp(VM* vm, BinOp op) {
 void initVM(VM* vm) {
     memset(vm, 0, sizeof(VM));
     vm->stackTop = vm->stack;
+    vm->nextGC = GC_INITIAL_THRESHOLD;
 }
 
 /* Frees all globals and open upvalues owned by the virtual machine */
@@ -407,8 +405,10 @@ void freeVM(VM* vm) {
 
     for (int i = 0; i < vm->globalCount; i++) {
         free(vm->globalKeys[i]);
-        globalReleaseValue(vm->globalVals[i]);
+        valueFree(vm->globalVals[i]);
     }
+
+    freeObjects(vm);
     initVM(vm);
 }
 
@@ -430,7 +430,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
         switch ((OpCode)instruction) {
             case OP_CONST: {
                 uint8_t constant = readByte(frame);
-                push(vm, valueCopy(frame->chunk->constants[constant]));
+                push(vm, valueCopyVm(vm, frame->chunk->constants[constant]));
                 break;
             }
             case OP_NULL:
@@ -502,7 +502,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
                 break;
             case OP_DEF_GLOBAL: {
                 uint8_t nameIndex = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
                 Value value = pop(vm);
                 if (!globalDefine(vm, name, value)) {
                     valueFree(value);
@@ -513,13 +513,13 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             }
             case OP_GET_GLOBAL: {
                 uint8_t nameIndex = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
                 if (!globalGet(vm, name)) return INTERPRET_RUNTIME_ERROR;
                 break;
             }
             case OP_SET_GLOBAL: {
                 uint8_t nameIndex = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
                 Value value = peek(vm, 0);
                 if (!globalSet(vm, name, value)) return INTERPRET_RUNTIME_ERROR;
                 break;
@@ -532,7 +532,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             }
             case OP_GET_LOCAL: {
                 uint8_t slot = readByte(frame);
-                push(vm, valueCopy(frame->slots[slot]));
+                push(vm, valueCopyVm(vm, frame->slots[slot]));
                 break;
             }
             case OP_SET_LOCAL: {
@@ -542,12 +542,12 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             }
             case OP_GET_UPVALUE: {
                 uint8_t slot = readByte(frame);
-                push(vm, valueCopy(upvalueGet(frame->closure->upvalues[slot])));
+                push(vm, valueCopyVm(vm, upvalueGet(frame->closure->upvalues[slot])));
                 break;
             }
             case OP_SET_UPVALUE: {
                 uint8_t slot = readByte(frame);
-                upvalueSet(frame->closure->upvalues[slot], peek(vm, 0));
+                upvalueSet(vm, frame->closure->upvalues[slot], peek(vm, 0));
                 break;
             }
             case OP_CLOSE_UPVALUE:
@@ -573,7 +573,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             case OP_CLOSURE: {
                 uint8_t constant = readByte(frame);
                 AsterFunction* function = frame->chunk->constants[constant].as.function;
-                AsterClosure* closure = closureNew(function, function->upvalueCount);
+                AsterClosure* closure = closureNew(vm, function, function->upvalueCount);
                 if (!closure) {
                     runtimeError(vm, "Out of memory.");
                     return INTERPRET_RUNTIME_ERROR;
@@ -597,7 +597,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
                 Value callee = peek(vm, 0);
                 if (callee.type == VAL_CLASS) {
                     pop(vm);
-                    AsterInstance* instance = instanceNew(callee.as.klass);
+                    AsterInstance* instance = instanceNew(vm, callee.as.klass);
                     if (!instance) {
                         runtimeError(vm, "Out of memory.");
                         return INTERPRET_RUNTIME_ERROR;
@@ -619,8 +619,8 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             }
             case OP_CLASS: {
                 uint8_t nameIndex = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
-                AsterClass* klass = classNew(name);
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
+                AsterClass* klass = classNew(vm, name);
                 if (!klass) {
                     runtimeError(vm, "Out of memory.");
                     return INTERPRET_RUNTIME_ERROR;
@@ -630,26 +630,26 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             }
             case OP_METHOD: {
                 uint8_t nameIndex = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
                 Value method = pop(vm);
                 if (method.type != VAL_CLOSURE) {
                     runtimeError(vm, "Expected method closure.");
-                    valueRelease(method);
+                    valueFree(method);
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 Value classValue = peek(vm, 0);
                 if (classValue.type != VAL_CLASS) {
                     runtimeError(vm, "Expected class.");
-                    valueRelease(method);
+                    valueFree(method);
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 classAddMethod(classValue.as.klass, name, method.as.closure->function);
-                closureFree(method.as.closure);
+                valueFree(method);
                 break;
             }
             case OP_GET_PROPERTY: {
                 uint8_t nameIndex = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
                 Value receiver = pop(vm);
                 if (receiver.type != VAL_INSTANCE) {
                     runtimeError(vm, "Only instances have properties.");
@@ -657,7 +657,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 Value field;
-                if (instanceGetField(receiver.as.instance, name, &field)) {
+                if (instanceGetField(vm, receiver.as.instance, name, &field)) {
                     valueFree(receiver);
                     push(vm, field);
                     break;
@@ -673,7 +673,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             }
             case OP_SET_PROPERTY: {
                 uint8_t nameIndex = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
                 Value receiver = pop(vm);
                 Value value = pop(vm);
                 if (receiver.type != VAL_INSTANCE) {
@@ -682,7 +682,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
                     valueFree(value);
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                if (!instanceSetField(receiver.as.instance, name, value)) {
+                if (!instanceSetField(vm, receiver.as.instance, name, value)) {
                     runtimeError(vm, "Too many fields on instance.");
                     valueFree(receiver);
                     valueFree(value);
@@ -695,7 +695,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
             case OP_INVOKE: {
                 uint8_t nameIndex = readByte(frame);
                 uint8_t argCount = readByte(frame);
-                const char* name = frame->chunk->constants[nameIndex].as.string;
+                const char* name = valueStringChars(frame->chunk->constants[nameIndex]);
                 Value receiver = peek(vm, argCount);
                 if (receiver.type != VAL_INSTANCE) {
                     runtimeError(vm, "Only instances have methods.");
@@ -730,7 +730,7 @@ InterpretResult run(VM* vm, Chunk* chunk) {
 }
 
 /* Parses, compiles, and runs source code in the VM */
-bool runSourceVM(const char* source, const char* label) {
+bool runSourceVMEx(const char* source, const char* label, size_t* bytesAfter) {
     printf("--- %s ---\n", label);
 
     AstNode* program = parse(source);
@@ -758,6 +758,11 @@ bool runSourceVM(const char* source, const char* label) {
     VM vm;
     initVM(&vm);
     InterpretResult result = run(&vm, &chunk);
+
+    if (bytesAfter) {
+        *bytesAfter = vmBytesAllocated(&vm);
+    }
+
     freeVM(&vm);
     freeChunk(&chunk);
 
@@ -768,4 +773,9 @@ bool runSourceVM(const char* source, const char* label) {
 
     printf("\n");
     return true;
+}
+
+/* Parses, compiles, and runs source code in the VM */
+bool runSourceVM(const char* source, const char* label) {
+    return runSourceVMEx(source, label, NULL);
 }

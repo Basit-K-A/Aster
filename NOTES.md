@@ -14,14 +14,15 @@
 | Chunk | `chunk.h`, `chunk.c` | Bytecode container and constant pool |
 | Compiler | `compiler.h`, `compiler.c` | AST → bytecode compiler |
 | Debug | `debug.h`, `debug.c` | Bytecode disassembler |
+| Object / GC | `object.h`, `object.c` | Mark-and-sweep garbage collector |
 | VM | `vm.h`, `vm.c` | Stack-based bytecode virtual machine |
 | Main | `main.c` | Entry point and tests |
 
 Build with `make` (Unix) or:
 
 ```powershell
-gcc -std=c17 -Wall -Wextra -c main.c lexer.c ast.c parser.c value.c env.c interpreter.c chunk.c compiler.c debug.c vm.c
-gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o interpreter.o chunk.o compiler.o debug.o vm.o -lm
+gcc -std=c17 -Wall -Wextra -c main.c lexer.c ast.c parser.c value.c env.c interpreter.c chunk.c compiler.c debug.c object.c vm.c
+gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o interpreter.o chunk.o compiler.o debug.o object.o vm.o -lm
 ```
 
 ## Phase 1 — Lexer (Complete)
@@ -212,3 +213,27 @@ gcc -std=c17 -Wall -Wextra -o aster main.o lexer.o ast.o parser.o value.o env.o 
 
 ### Next phase (Phase 9 — Garbage Collector)
 - Mark & sweep GC with intrusive object list
+
+## Phase 9 — Garbage Collector (Complete)
+
+### What was built
+- `AsterObject` intrusive header on GC-managed heap objects (`ObjString`, closures, classes, instances, upvalues)
+- Intrusive linked list on `VM.objects` with `bytesAllocated` / `nextGC` thresholds
+- Mark-and-sweep via gray worklist: roots from stack, globals, frames, open upvalues
+- `allocateObject()` / `copyString()` trigger collection when `bytesAllocated > nextGC`
+- Runtime strings and heap objects use GC; compile-time constant pool still uses `strdup`
+- `Value.isGcString` discriminates compile-time (`as.string`) vs GC (`as.stringObj`) string payloads in the shared union
+
+### Phase 9 test result
+- 5000-iteration string concatenation loop completes with bounded tracked heap (`done` printed, ~35KB retained)
+
+### Regression
+- All Phase 3/5/6/7/8 VM tests still pass (A–G)
+
+### Known limitations
+- Compile-time `AsterFunction` objects in bytecode constant pools are not GC objects
+- Tree-walk interpreter still uses manual `free`
+- No generational or incremental collection
+
+### Next phase (Phase 10 — Arrays & Standard Library)
+- Built-in arrays and `len`, `push`, `pop`, `str`, `num`, `clock`
